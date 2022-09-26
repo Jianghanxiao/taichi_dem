@@ -78,17 +78,17 @@ class Grain:
     radius: ti.f64;  # Radius, double
     elasticModulus: ti.f64;  # Elastic modulus, double
     poissonRatio: ti.f64; # Poisson's ratio, double
-    # Translational attributes, all in GLOBAL coordinates
-    position: Vector3d;  # Position, Vector3d
-    velocity: Vector3d;  # Velocity, Vector3d
-    acceleration: Vector3d;  # Acceleration, Vector3d
-    force: Vector3d;  # Force, Vector3d
-    # Rotational attributes, all in GLOBAL coordinates
-    quaternion: Vector4d;  # Quaternion, Vector4d, order in [w, x, y, z]
-    omega: Vector3d;  # Angular velocity, Vector3d
-    omega_dot: Vector3d;  # Angular acceleration, Vector3d
-    inertia: DEMMatrix; # Moment of inertia tensor, 3 * 3 matrix with double
-    moment: Vector3d; # Total moment (including torque), Vector3d
+    # Translational attributes
+    position: Vector3d;  # Position in GLOBAL coordinates, Vector3d
+    velocity: Vector3d;  # Velocity in GLOBAL coordinates, Vector3d
+    acceleration: Vector3d;  # Acceleration in GLOBAL coordinates, Vector3d
+    force: Vector3d;  # Force in GLOBAL coordinates, Vector3d
+    # Rotational attributes
+    quaternion: Vector4d;  # Quaternion in GLOBAL coordinates, Vector4d, order in [w, x, y, z]
+    omega: Vector3d;  # Angular velocity in GLOBAL coordinates, Vector3d
+    omega_dot: Vector3d;  # Angular acceleration in GLOBAL coordinates, Vector3d
+    inertia: DEMMatrix; # Moment of inertia tensor in LOCAL coordinates, 3 * 3 matrix with double
+    moment: Vector3d; # Total moment/torque in GLOBAL coordinates, Vector3d
 
 # Initialize grain field
 gf = Grain.field();
@@ -464,8 +464,8 @@ def evaluate(i : ti.i32, j : ti.i32):
         # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
         # https://doi.org/10.1002/nme.6568
         # Eqs. (3)-(4)
-        gf[i].moment += ti.math.cross(r_i, F);
-        gf[j].moment += ti.math.cross(r_j, -F);  
+        gf[i].moment += ti.math.cross(r_i, ti.Matrix.inverse(cf[i, j].rotationMatrix) @ F);
+        gf[j].moment += ti.math.cross(r_j, ti.Matrix.inverse(cf[i, j].rotationMatrix) @ (-F));  
 
 # Particle-particle contact detection
 @ti.func
@@ -561,7 +561,7 @@ def evaluate_wall(i : ti.i32, j : ti.i32): # i is particle, j is wall
     # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
     # https://doi.org/10.1002/nme.6568
     # Eqs. (3)-(4)
-    gf[i].moment += ti.math.cross(r_i, F);
+    gf[i].moment += ti.math.cross(r_i, ti.Matrix.inverse(cf[i, j].rotationMatrix) @ F);
     
 # Particle-wall contact detection
 @ti.func
