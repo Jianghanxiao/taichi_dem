@@ -6,11 +6,11 @@ DEMSolverConfig::DEMSolverConfig()
     // Denver Pilphis : in this example, we assign no gravity
     gravity = Vector3(0.0, 0.0, 0.0);
     // Time step, a global parameter
-    dt = 1e-7; // Larger dt might lead to unstable results.
-    target_time = 0.001;
+    dt = time_increment; // Larger dt might lead to unstable results.
+    target_time = total_time;
     // No. of steps for run, a global parameter
     nsteps = (int)(target_time / dt);
-    saving_interval_time = 0.00001;
+    saving_interval_time = save_interval_time;
     saving_interval_steps = (int)(saving_interval_time / dt);
 }
 
@@ -139,7 +139,7 @@ void DEMSolver::init_particle_fields(const std::string& file_name)
     {
         wf[j] = new Wall();
         wf[j]->normal = Vector3(1.0, 0.0, 0.0); // Outer normal vector of the wall, [A, B, C]
-        wf[j]->distance = 0.01; // Distance between origin and the wall, D
+        wf[j]->distance = wall_position_x; // Distance between origin and the wall, D
             // Material properties
         wf[j]->density = 7800.0; // Density of the wall
         wf[j]->elasticModulus = 2e11; // Elastic modulus of the wall
@@ -308,7 +308,15 @@ void DEMSolver::evaluate(const Integer& i, const Integer& j)
             0, 0, -k3, 0, k5, 0, 0, 0, k3, 0, k6, 0,
             0, k3, 0, 0, 0, k5, 0, -k3, 0, 0, 0, k6,
             -k1, 0, 0, 0, 0, 0, k1, 0, 0, 0, 0, 0,
-            0, -k2, 0, 0, 0, k3, 0, k2, 0, 0, 0, -k3,
+            // K(7, 5) is WRONG in original EBPM document
+            // ¦¤Fay + ¦¤Fby is nonzero
+            // which does not satisfy the equilibrium
+            // Acknowledgement to Dr. Xizhong Chen in 
+            // Department of Chemical and Biological Engineering,
+            // The University of Sheffield
+            // Reference: Chen et al. (2022) A comparative assessment and unification of bond models in DEM simulations.
+            // https://doi.org/10.1007/s10035-021-01187-2
+            0, -k2, 0, 0, 0, -k3, 0, k2, 0, 0, 0, -k3,
             0, 0, -k2, 0, k3, 0, 0, 0, k2, 0, k3, 0,
             0, 0, 0, -k4, 0, 0, 0, 0, 0, k4, 0, 0,
             0, 0, -k3, 0, k6, 0, 0, 0, k3, 0, k5, 0,
@@ -318,6 +326,11 @@ void DEMSolver::evaluate(const Integer& i, const Integer& j)
         cf(i, j)->moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5]);
         cf(i, j)->force_b += Vector3(forceVector[6], forceVector[7], forceVector[8]);
         cf(i, j)->moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11]);
+
+        if ((cf(i, j)->force_a + cf(i, j)->force_b).norm() > DoublePrecisionTolerance)
+            throw "Force equillibrium error!";
+        if (abs(cf(i, j)->moment_a[0] + cf(i, j)->moment_b[0]) > DoublePrecisionTolerance)
+            throw "Torque equillibrium error!";
 
         // Check whether the bond fails
         Real sigma_c_a = cf(i, j)->force_b[0] / A_b - r_b / I_b * sqrt(pow(cf(i, j)->moment_a[1], 2) + pow(cf(i, j)->moment_a[2], 2));
@@ -386,11 +399,13 @@ void DEMSolver::evaluate(const Integer& i, const Integer& j)
         Vector3 r_j = cf(i, j)->position - gf[j]->position;
         // Velocity of a point on the surface of a rigid body
         
+        /*
         Vector3 temp0 = gf[i]->velocity;
         Vector3 temp1 = gf[j]->velocity;
         Vector3 temp2 = gf[i]->omega;
         Vector3 temp3 = gf[j]->omega;
-        
+        */
+
         Vector3 v_c_i = gf[i]->omega.cross(r_i) + gf[i]->velocity;
         Vector3 v_c_j = gf[j]->omega.cross(r_j) + gf[j]->velocity;
         Vector3 v_c = cf(i, j)->rotationMatrix * (v_c_j - v_c_i); // LOCAL coordinate
@@ -422,7 +437,7 @@ void DEMSolver::evaluate(const Integer& i, const Integer& j)
         // if (F[0] < 0.0)
         //    std::cout << "Normal force problem: " << F[0] << std::endl;
         // Shear direction - LOCAL - the force towards particle j
-        Vector3 try_shear_force = k_t * cf(i, j)->shear_displacement;
+        Vector3 try_shear_force = -k_t * cf(i, j)->shear_displacement;
         if (try_shear_force.norm() >= cf(i, j)->coefficientFriction * F[0]) // Sliding
         {
             Real ratio = cf(i, j)->coefficientFriction * F[0] / try_shear_force.norm();
@@ -433,8 +448,8 @@ void DEMSolver::evaluate(const Integer& i, const Integer& j)
         }
         else // No sliding
         {
-            F[1] = -k_t * v_c[1] * dt - gamma_t * v_c[1];
-            F[2] = -k_t * v_c[2] * dt - gamma_t * v_c[2];
+            F[1] = try_shear_force[1] - gamma_t * v_c[1];
+            F[2] = try_shear_force[2] - gamma_t * v_c[2];
         }
         
         // No moment is conducted in Hertz - Mindlin model
@@ -564,7 +579,7 @@ void DEMSolver::evaluate_wall(const Integer& i, const Integer& j)
     // Be aware of signs
     F[0] = -k_n * gap - gamma_n * v_c[0];
     // Shear direction - LOCAL - the force towards the wall
-    Vector3 try_shear_force = k_t * wcf(i, j)->shear_displacement;
+    Vector3 try_shear_force = -k_t * wcf(i, j)->shear_displacement;
     if (try_shear_force.norm() >= wcf(i, j)->coefficientFriction * F[0]) // Sliding
     {
         Real ratio = wcf(i, j)->coefficientFriction * F[0] / try_shear_force.norm();
@@ -575,8 +590,8 @@ void DEMSolver::evaluate_wall(const Integer& i, const Integer& j)
     }
     else // No sliding
     {
-        F[1] = -k_t * v_c[1] * dt - gamma_t * v_c[1];
-        F[2] = -k_t * v_c[2] * dt - gamma_t * v_c[2];
+        F[1] = try_shear_force[1] - gamma_t * v_c[1];
+        F[2] = try_shear_force[2] - gamma_t * v_c[2];
     }
        
     // No moment is conducted in Hertz - Mindlin model
