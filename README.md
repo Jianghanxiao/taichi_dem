@@ -1,22 +1,13 @@
-# Taichi DEM
-A minimal DEM simulation demo written in Taichi.
+# Complex DEM simulation using Taichi DEM
+DEM simulation in Taichi HPC Framework incorporating partcle orientation, rotation and bonding.
 
-<img src="https://raw.githubusercontent.com/taichi-dev/public_files/master/taichi_dem/demo.gif" height="270px">
+## Authors
+Denver Pilphis (Complex DEM mechanism implementation)
 
-> To implement your own version, click the "Use this template" button on this page and simply modify the `dem.py` script.
+MuGdxy (GPU HPC optimization)
 
-## Installation
-Make sure your `pip` is up-to-date:
-
-```bash
-$ pip3 install pip --upgrade
-```
-
-Assume you have a Python 3 environment, to install Taichi:
-
-```bash
-$ pip3 install -U taichi
-```
+## Introducion
+A bonded agglomerate with cubed shape hitting on a flat surface is performed as the initial demo. The bonds within the agglomerate will fail while the agglomerate is hitting the surface. Then the agglomerate will break into fragments, flying to the surrounding space.
 
 To run the demo:
 
@@ -24,21 +15,15 @@ To run the demo:
 $ python dem.py
 ```
 
-## Assumptions
-The `dem.py` implements a minimal DEM solver with the following assumptions:
+## Features
+Compared to the initial Taichi DEM commit, this instance has added the following features:
 
-- All paricles are round circles with variable radius.
-- Only the normal force between particles is considered - the tangential force is not included.
-- The deformation of the particles is not included.
-- Ignore the angular momentum of the particle and only consider the translation of the particle.
+1. 2D DEM to 3D DEM;
+2. Particle orientation and rotation are fully considered and implemented, in which the possibility for modeling nonspherical particles is reserved;
+3. Wall (geometry in DEM) element is implemented, particle-wall contact is solved;
+4. Complex DEM contact model is implemented, including a bond model (Edinburgh Bond Particle Model, EBPM) and a granular contact model (Hertz-Mindlin Model);
+5. As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates;
+6. As a bond model is implemented, particle breakage can be simulated.
 
-## Open missions
-There are plenty of room for hacking! We suggest a few of them for you to start with:
-- Reduce the neighborhood search region from the 3x3 grid cells to only 5 grid cells
-- Support more particle geometries
-- Implement angular momentum of the particles
-- Include tangential forces
-- ...
-
-## Show your work!
-We encourage you to continue developing on this repo and share your work with our community members. To notify us about your work, make sure you use this repo as a template.
+## Future work
+The development will persist in which more interesting demos will come out!

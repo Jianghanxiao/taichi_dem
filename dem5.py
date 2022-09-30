@@ -15,12 +15,15 @@
 # 2. Particle orientation and rotation are fully considered and implemented, in which the possibility
 #    for modeling nonspherical particles is reserved;
 # 3. Wall (geometry in DEM) element is implemented, particle-wall contact is solved;
-# 4. Complex DEM contact model is implemented, including a bond model (Edinburgh Bond Particle Model)
-#    and a granular contact model (Hertz-Mindlin Model).
+# 4. Complex DEM contact model is implemented, including a bond model (Edinburgh Bond Particle Model, EBPM)
+#    and a granular contact model (Hertz-Mindlin Model);
+# 5. As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates;
+# 6. As a bond model is implemented, particle breakage can be simulated.
 # 
-# TODO List:
-# 1. cf MUST BE OPTIMIZED, otherwise large scale calculations cannot be performed.
-# 2. HPC optimization has NOT been implemented for particle-wall contacts.
+# TODO list:
+# 1. External imports exist, which does not meet the requirements of Taichi DEM competition;
+# 2. Consider importing walls via stereolithography (STL) file;
+# 2. Try processing and benchmarking large systems of DEM.
 
 from pickletools import read_int4
 from tokenize import Double
