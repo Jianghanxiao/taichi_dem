@@ -6,7 +6,7 @@ DEM simulation in Taichi HPC Framework incorporating partcle orientation, rotati
 >Visualized using BIMBase with secondary development. BIMBase is a graphical platform aimed for BIM by Glory PKPM. https://app.pkpm.cn/pbims
 
 ## Authors
-Denver Pilphis (Complex DEM mechanism implementation)s
+Denver Pilphis (Complex DEM mechanism implementation)
 
 MuGdxy (GPU HPC optimization)
 
