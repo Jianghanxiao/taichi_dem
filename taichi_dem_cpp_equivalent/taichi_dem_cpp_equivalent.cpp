@@ -10,11 +10,27 @@ int main()
     DEMSolver solver(config);
     solver.init_particle_fields("input.p4p");
     solver.init_grid_fields(grid_n);
-    solver.init_simulation();
+    if (bond) solver.init_simulation();
     std::cout << "Grid size: " << grid_n << "x" << grid_n << std::endl;
     
+    /*
     for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator("./output_data"))
         std::filesystem::remove_all(entry.path());
+    */
+    try
+    {
+        std::filesystem::remove("output.p4p");
+    }
+    catch (std::exception ex)
+    {}
+
+    try
+    {
+        std::filesystem::remove("output.p4c");
+    }
+    catch (std::exception ex)
+    {
+    }
 
     Integer step = 0;
     for (; step < solver.config.nsteps; ++step)
@@ -22,10 +38,10 @@ int main()
         std::cout << step << " ";
         solver.run_simulation();
         if (step % solver.config.saving_interval_steps == 0)
-            solver.save("output_data/" + std::to_string(step), solver.config.dt * (Real)step);
+            solver.save("output", solver.config.dt * (Real)step);
     }
     // Final save
-    solver.save("output_data/" + std::to_string(step), solver.config.dt * (Real)step);
+    solver.save("output", solver.config.dt * (Real)step);
 
     // Clear up all the datasets
     // Clear StructFieldObjs

@@ -4,7 +4,7 @@ DEMSolverConfig::DEMSolverConfig()
 {
     // Gravity, a global parameter
     // Denver Pilphis : in this example, we assign no gravity
-    gravity = Vector3(0.0, 0.0, 0.0);
+    gravity = Vector3(gravity_x, gravity_y, gravity_z);
     // Time step, a global parameter
     dt = time_increment; // Larger dt might lead to unstable results.
     target_time = total_time;
@@ -22,7 +22,7 @@ DEMSolver::DEMSolver(const DEMSolverConfig& input_config)
 void DEMSolver::save(const std::string& file_name, const Real& etime)
 {
     // P4P file for particles
-    std::ofstream fp(file_name + ".p4p", std::ios::out);
+    std::ofstream fp(file_name + ".p4p", std::ios::out|std::ios::app);
     Integer n = gf.rows();
     fp << "TIMESTEP  PARTICLES" << std::endl;
     fp << etime << " " << n << std::endl;
@@ -46,6 +46,7 @@ void DEMSolver::save(const std::string& file_name, const Real& etime)
            << px << " " << py << " " << pz << " "
            << vx << " " << vy << " " << vz << std::endl;
     }
+    fp << std::endl;
     fp.close();
 
     // P4C file for contacts
@@ -80,11 +81,12 @@ void DEMSolver::save(const std::string& file_name, const Real& etime)
             ++ncontact;
         }
 
-    fp.open(file_name + ".p4c", std::ios::out);
+    fp.open(file_name + ".p4c", std::ios::out|std::ios::app);
     fp << "TIMESTEP  CONTACTS" << std::endl;
     fp << etime << " " << ncontact << std::endl;
     for (const std::string& str : ccache)
         fp << str;
+    fp << std::endl;
     fp.close();
 }
 
@@ -138,8 +140,8 @@ void DEMSolver::init_particle_fields(const std::string& file_name)
     for (int j = 0; j < wf.rows(); ++j)
     {
         wf[j] = new Wall();
-        wf[j]->normal = Vector3(1.0, 0.0, 0.0); // Outer normal vector of the wall, [A, B, C]
-        wf[j]->distance = wall_position_x; // Distance between origin and the wall, D
+        wf[j]->normal = Vector3(wall_normal_x, wall_normal_y, wall_notmal_z); // Outer normal vector of the wall, [A, B, C]
+        wf[j]->distance = wall_distance; // Distance between origin and the wall, D
             // Material properties
         wf[j]->density = 7800.0; // Density of the wall
         wf[j]->elasticModulus = 2e11; // Elastic modulus of the wall

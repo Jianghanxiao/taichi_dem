@@ -4,8 +4,7 @@
 .idea
 AssignParticleVelocityEDEM/
 BindP4/
+Demos/
 Sample/
 taichi_dem_cpp_equivalent/.vs/
-taichi_dem_cpp_equivalent/output_data/
 taichi_dem_cpp_equivalent/x64/
-output_data/

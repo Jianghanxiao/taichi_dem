@@ -19,32 +19,13 @@
 #    and a granular contact model (Hertz-Mindlin Model);
 # 5. As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates;
 # 6. As a bond model is implemented, particle breakage can be simulated.
-# 
-# TODO list:
-# 1. External imports exist, which does not meet the requirements of Taichi DEM competition;
-# 2. Consider importing walls via stereolithography (STL) file;
-# 2. Try processing and benchmarking large systems of DEM.
 
-from pickletools import read_int4
-from tokenize import Double
 import taichi as ti
 import taichi.math as tm
 import os
 import numpy as np
-#=====================================
-# Hard Code For Dev Test
-#=====================================
-# WallDistance:float = 0.1 # Denver Pilphis: The wall used in this example is a specific wall
-# Wall distance is wall property and should not be modified in global scenario
-MaxParticleCount:int = 1000000; # Limit number of particles for efficiency benchmark
+import time
 
-#=====================================
-# Environmental Variables
-#=====================================
-DoublePrecisionTolerance: float = 1e-12; # Boundary between zeros and non-zeros
-
-# init taichi context
-ti.init(arch=ti.gpu)
 #=====================================
 # Type Definition
 #=====================================
@@ -61,6 +42,34 @@ DEMMatrix = Matrix3x3
 EBPMStiffnessMatrix = ti.types.matrix(12, 12, Real)
 EBPMForceDisplacementVector = ti.types.vector(12, Real)
 
+#=====================================
+# DEM Problem Configuration
+#=====================================
+set_domain_min: Vector3 = Vector3(-5,-5,-5)
+set_domain_max: Vector3 = Vector3(0.1,5,5)
+set_init_particles: str = "Resources/cube_911_particles_impact.p4p"
+
+class DEMSolverConfig:
+    def __init__(self):
+        # Gravity, a global parameter
+        # Denver Pilphis: in this example, we assign no gravity
+        self.gravity : Vector3 = Vector3(0.0, 0.0, 0.0)
+        # Time step, a global parameter
+        self.dt : Real = 1e-7  # Larger dt might lead to unstable results.
+        self.target_time : Real = 0.001
+        # No. of steps for run, a global parameter
+        self.nsteps : Integer = int(self.target_time / self.dt)
+        self.saving_interval_time : Real = 1e-5
+        self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
+
+#=====================================
+# Environmental Variables
+#=====================================
+DoublePrecisionTolerance: float = 1e-12; # Boundary between zeros and non-zeros
+MaxParticleCount: int = 10000000;
+
+# init taichi context
+ti.init(arch=ti.gpu)
 
 #=====================================
 # Utils
@@ -77,7 +86,15 @@ def next_pow2(x:ti.i32):
     x |= (x >> 8)
     x |= (x >> 16)
     return x + 1
-    
+
+def round32(n:ti.i32):
+    if(n % 32 == 0): return n
+    else: return ((n >> 5) + 1) << 5
+
+@ti.func
+def round32d(n:ti.i32):
+    if(n % 32 == 0): return n
+    else: return ((n >> 5) + 1) << 5
 
 # Add a math function: quaternion to rotation matrix
 # References:
@@ -113,13 +130,10 @@ def quat2RotMatrix(quat : Vector4) -> Matrix3x3:
     return result
 
 #======================================
-# Broad Phase Collisoin Detection
+# Broad Phase Collision Detection
 #======================================
 @ti.data_oriented
 class PrefixSumExecutor:
-    def __init__(self):
-        pass
-    
     @ti.kernel
     def serial(self, output:ti.template(), input:ti.template()):
         n = input.shape[0]
@@ -177,6 +191,9 @@ class PrefixSumExecutor:
 
 @ti.data_oriented
 class BPCD:
+    '''
+    Broad Phase Collision Detection
+    '''
     @ti.dataclass
     class HashCell:
         offset : Integer
@@ -361,7 +378,7 @@ class BPCD:
         return ret
 
 #======================================
-# data class definition
+# Data Class Definition
 #======================================
 # Particle in DEM
 # Denver Pilphis: keep spherical shape first, added particle attributes to make the particle kinematically complete
@@ -440,20 +457,17 @@ class Contact:
     coefficientRollingResistance: Real # Coefficient of rolling resistance, double
     shear_displacement: Vector3 # Shear displacement stored in the contact
 
-
-class DEMSolverConfig:
-    def __init__(self):
-        # Gravity, a global parameter
-        # Denver Pilphis: in this example, we assign no gravity
-        self.gravity : Vector3 = Vector3(0.0, 0.0, 0.0)
-        # Time step, a global parameter
-        self.dt : Real = 1e-7  # Larger dt might lead to unstable results.
-        self.target_time : Real = 0.001
-        # No. of steps for run, a global parameter
-        self.nsteps : Integer = int(self.target_time / self.dt)
-        self.saving_interval_time : Real = 1e-5
-        self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
-
+@ti.dataclass
+class IOContact:
+    '''
+    Contact data for IO
+    '''
+    i:Integer
+    j:Integer
+    position:Vector3
+    force_a:Vector3
+    isBonded:Integer
+    isActive:Integer
 
 @ti.data_oriented
 class DEMSolver:
@@ -464,11 +478,16 @@ class DEMSolver:
         # particle fields
         self.gf:ti.StructField
         self.cf:ti.StructField
+        self.cfn:ti.SNode
+        
         self.wf:ti.StructField
         self.wcf:ti.StructField
         
         self.collision_pairs:ti.StructField
         self.collision_node:ti.SNode
+        
+        self.cp:ti.StructField
+        self.cn:ti.SNode
         # grid fields
         # self.list_head:ti.StructField
         # self.list_cur:ti.StructField
@@ -477,81 +496,52 @@ class DEMSolver:
         # self.column_sum:ti.StructField
         # self.prefix_sum:ti.StructField
         # self.particle_id:ti.StructField
+
+
+    @ti.kernel
+    def fill_dense_cf(self, dense_cf:ti.template()):
+        k = 0
+        for i,j in self.cf:
+            if(self.cf[i,j].isActive):
+                p = ti.atomic_add(k, 1)
+                dense_cf[p].position = self.cf[i, j].position
+                dense_cf[p].force_a = self.cf[i, j].force_a
+                dense_cf[p].isBonded = self.cf[i,j].isBonded
+                dense_cf[p].isActive = self.cf[i,j].isActive
+                dense_cf[p].i = i
+                dense_cf[p].j = j
     
-    
+    @ti.kernel
+    def dense_cf_size(self)->Integer:
+        k = 0
+        for i,j in self.cf: ti.atomic_add(k, 1)
+        return k
+
+
     def save(self, file_name:str, time:float):
         '''
         save the solved data at <time> to file .p4p and .p4c
         '''
         # P4P file for particles
-        fp = open(file_name + ".p4p", encoding="UTF-8",mode='w')
-        n = self.gf.shape[0]
-        fp.write("TIMESTEP  PARTICLES\n")
-        fp.write(f'{time} {n}\n')
-        fp.write("ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ\n")
-        np_ID = self.gf.ID.to_numpy()
-        np_mass = self.gf.mass.to_numpy()
-        np_density = self.gf.density.to_numpy()
-        np_position = self.gf.position.to_numpy()
-        np_velocity = self.gf.velocity.to_numpy()
-        for i in range(n):
-            # GROUP omitted
-            group : int = 0
-            ID : int = np_ID[i]
-            volume : float = np_mass[i]/np_density[i]
-            mass : float = np_mass[i]
-            px : float = np_position[i][0]
-            py : float = np_position[i][1]
-            pz : float = np_position[i][2]
-            vx : float = np_velocity[i][0]
-            vy : float = np_velocity[i][1]
-            vz : float = np_velocity[i][2]
-            fp.write(f'{ID} {group} {volume} {mass} {px} {py} {pz} {vx} {vy} {vz}\n')
-        fp.close()
+        p4p = open(file_name + ".p4p", encoding="UTF-8",mode='a')
+        p4c = open(file_name + ".p4c", encoding="UTF-8",mode='a')
+        self.save_single(p4p, p4c, time)
+        p4p.close()
+        p4c.close()
 
-        # P4C file for contacts
-        ccache: list = ["P1  P2  CX  CY  CZ  FX  FY  FZ  CONTACT_IS_BONDED\n"];
-        ncontact: int = 0;
-        np_active = self.cf.isActive.to_numpy()
-        np_position = self.cf.position.to_numpy()
-        np_force_a = self.cf.force_a.to_numpy()
-        np_bonded = self.cf.isBonded.to_numpy()
-        for i in range(n):
-            for j in range(n):
-                if (i >= j): continue;
-                if (not np_active[i][j]): continue;
-                # GROUP omitted
-                p1 : int = np_ID[i];
-                p2 : int = np_ID[j];
-                if(i != np_ID[i] - 1): raise "error"
-                cx : float = np_position[i, j][0];
-                cy : float = np_position[i, j][1];
-                cz : float = np_position[i, j][2];
-                fx : float = np_force_a[i, j][0]; # Denver Pilphis: the force is not stored in present version
-                fy : float = np_force_a[i, j][1]; # Denver Pilphis: the force is not stored in present version
-                fz : float = np_force_a[i, j][2]; # Denver Pilphis: the force is not stored in present version
-                bonded : int = np_bonded[i, j];
-                ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
-                ncontact += 1;
 
-        fp = open(file_name + ".p4c", encoding="UTF-8",mode='w')
-        # n = self.gf.shape[0]
-        fp.write("TIMESTEP  CONTACTS\n")
-        fp.write(f'{time} {ncontact}\n')
-        for i in range (ncontact + 1): # Include the title line
-            fp.write(ccache[i]);
-        fp.close()
-    
-    
-    def save_single(self, p4pfile, p4cfile, time:float):
+
+    def save_single(self, p4pfile, p4cfile, t:float):
         '''
         save the solved data at <time> to <p4pfile> and <p4cfile>
         '''
+        tk1 = time.time()
         # P4P file for particles
         n = self.gf.shape[0]
-        p4pfile.write("TIMESTEP  PARTICLES\n")
-        p4pfile.write(f'{time} {n}\n')
-        p4pfile.write("ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ\n")
+        ccache = ["TIMESTEP  PARTICLES\n",
+                  f"{t} {n}\n",
+                  "ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ\n"
+                  ]
         np_ID = self.gf.ID.to_numpy()
         np_mass = self.gf.mass.to_numpy()
         np_density = self.gf.density.to_numpy()
@@ -569,40 +559,112 @@ class DEMSolver:
             vx : float = np_velocity[i][0]
             vy : float = np_velocity[i][1]
             vz : float = np_velocity[i][2]
-            p4pfile.write(f'{ID} {group} {volume} {mass} {px} {py} {pz} {vx} {vy} {vz}\n')
+            ccache.append(f'{ID} {group} {volume} {mass} {px} {py} {pz} {vx} {vy} {vz}\n')
 
+        for line in ccache: # Include the title line
+            p4pfile.write(line);
+        
         # P4C file for contacts
-        ccache: list = ["P1  P2  CX  CY  CZ  FX  FY  FZ  CONTACT_IS_BONDED\n"];
-        ncontact: int = 0;
-        np_ID = self.gf.ID.to_numpy()
-        np_active = self.cf.isActive.to_numpy()
-        np_position = self.cf.position.to_numpy()
-        np_force_a = self.cf.force_a.to_numpy()
-        np_bonded = self.cf.isBonded.to_numpy()
-        for i in range(n):
-            for j in range(n):
-                if (i >= j): continue;
-                if (not np_active[i][j]): continue;
-                # GROUP omitted
-                p1 : int = np_ID[i];
-                p2 : int = np_ID[j];
-                cx : float = np_position[i, j][0];
-                cy : float = np_position[i, j][1];
-                cz : float = np_position[i, j][2];
-                fx : float = np_force_a[i, j][0]; # Denver Pilphis: the force is not stored in present version
-                fy : float = np_force_a[i, j][1]; # Denver Pilphis: the force is not stored in present version
-                fz : float = np_force_a[i, j][2]; # Denver Pilphis: the force is not stored in present version
-                bonded : int = np_bonded[i, j];
-                ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
-                ncontact += 1;
+        ncontact = self.dense_cf_size()
+        fb = ti.FieldsBuilder()
+        dense_cf = IOContact.field()
+        fb.dense(ti.i, ncontact).place(dense_cf)
+        snode_tree = fb.finalize()  # Finalizes the FieldsBuilder and returns a SNodeTree
+        self.fill_dense_cf(dense_cf)
+        
+        np_i = dense_cf.i.to_numpy()
+        np_j = dense_cf.j.to_numpy()
+        np_position = dense_cf.position.to_numpy()
+        np_force_a = dense_cf.force_a.to_numpy()
+        np_bonded = dense_cf.isBonded.to_numpy()
+        np_active = dense_cf.isActive.to_numpy()
+        ncontact = dense_cf.shape[0]
+        snode_tree.destroy()
+        
+        ccache: list = ["TIMESTEP  CONTACTS\n",
+                        f"{t} {ncontact}\n",
+                        "P1  P2  CX  CY  CZ  FX  FY  FZ  CONTACT_IS_BONDED\n"];
+        
+        for k in range(dense_cf.shape[0]):
+            # GROUP omitted
+            p1 : int = np_ID[np_i[k]];
+            p2 : int = np_ID[np_j[k]];
+            cx : float = np_position[k][0];
+            cy : float = np_position[k][1];
+            cz : float = np_position[k][2];
+            fx : float = np_force_a[k][0]; # Denver Pilphis: the force is not stored in present version
+            fy : float = np_force_a[k][1]; # Denver Pilphis: the force is not stored in present version
+            fz : float = np_force_a[k][2]; # Denver Pilphis: the force is not stored in present version
+            bonded : int = np_bonded[k];
+            ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
 
-        # n = self.gf.shape[0]
-        p4cfile.write("TIMESTEP  CONTACTS\n")
-        p4cfile.write(f'{time} {ncontact}\n')
-        for i in range (ncontact + 1): # Include the title line
-            p4cfile.write(ccache[i]);
-    
-    
+        for line in ccache: # Include the title line
+            p4cfile.write(line);
+        tk2 = time.time()
+        print(f"save time cost = {tk2 - tk1}")
+
+    # def save_single(self, p4pfile, p4cfile, time:float):
+    #     '''
+    #     save the solved data at <time> to <p4pfile> and <p4cfile>
+    #     '''
+    #     # P4P file for particles
+    #     n = self.gf.shape[0]
+    #     p4pfile.write("TIMESTEP  PARTICLES\n")
+    #     p4pfile.write(f'{time} {n}\n')
+    #     p4pfile.write("ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ\n")
+    #     np_ID = self.gf.ID.to_numpy()
+    #     np_mass = self.gf.mass.to_numpy()
+    #     np_density = self.gf.density.to_numpy()
+    #     np_position = self.gf.position.to_numpy()
+    #     np_velocity = self.gf.velocity.to_numpy()
+    #     for i in range(n):
+    #         # GROUP omitted
+    #         group : int = 0
+    #         ID : int = np_ID[i]
+    #         volume : float = np_mass[i]/np_density[i]
+    #         mass : float = np_mass[i]
+    #         px : float = np_position[i][0]
+    #         py : float = np_position[i][1]
+    #         pz : float = np_position[i][2]
+    #         vx : float = np_velocity[i][0]
+    #         vy : float = np_velocity[i][1]
+    #         vz : float = np_velocity[i][2]
+    #         p4pfile.write(f'{ID} {group} {volume} {mass} {px} {py} {pz} {vx} {vy} {vz}\n')
+
+    #     # P4C file for contacts
+    #     ccache: list = ["P1  P2  CX  CY  CZ  FX  FY  FZ  CONTACT_IS_BONDED\n"];
+    #     ncontact: int = 0;
+    #     np_ID = self.gf.ID.to_numpy()
+        
+        
+    #     np_active = self.cf.isActive.to_numpy()
+    #     np_position = self.cf.position.to_numpy()
+    #     np_force_a = self.cf.force_a.to_numpy()
+    #     np_bonded = self.cf.isBonded.to_numpy()
+    #     for i in range(n):
+    #         for j in range(n):
+    #             if (i >= j): continue;
+    #             if (not np_active[i][j]): continue;
+    #             # GROUP omitted
+    #             p1 : int = np_ID[i];
+    #             p2 : int = np_ID[j];
+    #             cx : float = np_position[i, j][0];
+    #             cy : float = np_position[i, j][1];
+    #             cz : float = np_position[i, j][2];
+    #             fx : float = np_force_a[i, j][0]; # Denver Pilphis: the force is not stored in present version
+    #             fy : float = np_force_a[i, j][1]; # Denver Pilphis: the force is not stored in present version
+    #             fz : float = np_force_a[i, j][2]; # Denver Pilphis: the force is not stored in present version
+    #             bonded : int = np_bonded[i, j];
+    #             ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
+    #             ncontact += 1;
+
+    #     # n = self.gf.shape[0]
+    #     p4cfile.write("TIMESTEP  CONTACTS\n")
+    #     p4cfile.write(f'{time} {ncontact}\n')
+    #     for i in range (ncontact + 1): # Include the title line
+    #         p4cfile.write(ccache[i]);
+
+
     def init_particle_fields(self, file_name:str, domain_min:Vector3, domain_max:Vector3):
         fp = open(file_name, encoding="UTF-8")
         line : str = fp.readline() # "TIMESTEP  PARTICLES" line
@@ -613,10 +675,9 @@ class DEMSolver:
 
         # Initialize particles
         self.gf = Grain.field(shape=(n))
-        self.cf = Contact.field(shape=(n, n))
         self.wf = Wall.field(shape = nwall)
         self.wcf = Contact.field(shape = (n,nwall))
-        self.particle_id = ti.field(dtype=Integer, shape=n, name="particle_id")
+        # self.particle_id = ti.field(dtype=Integer, shape=n, name="particle_id")
         # cf.fill(Contact()) # TODO: fill all NULLs
         
         line = fp.readline() # "ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ" line
@@ -691,11 +752,33 @@ class DEMSolver:
             self.wf[j].poissonRatio = 0.25 # Poisson's ratio of the wall
         
         self.bpcd = BPCD.create(n, max_radius * 1.1, domain_min, domain_max)
-        self.collision_pairs = ti.field(ti.i8)
-        self.collision_node = ti.root.pointer(ti.ij,(n,n))
-        self.collision_node.place(self.collision_pairs)
+        
+        u1 = ti.types.quant.int(1, False)
+        self.cp = ti.field(u1)
+        self.cn = ti.root.dense(ti.i, round32(n * n)//32).quant_array(ti.i, dimensions=32, max_num_bits=32).place(self.cp)
+        
+        self.cf = Contact.field()
+        self.cfn = ti.root.pointer(ti.ij, (n,n)).place(self.cf)
+        
+        # self.collision_pairs = ti.field(ti.i8)
+        # self.collision_node = ti.root.pointer(ti.ij,(n,n))
+        # self.collision_node.place(self.collision_pairs)
 
-    
+
+    @ti.func
+    def set_collision_bit(self, i:ti.i32, j:ti.i32):
+        n = self.gf.shape[0]
+        idx = i * n + j
+        self.cp[idx] = 1
+
+
+    @ti.func
+    def get_collision_bit(self, i:ti.i32, j:ti.i32):
+        n = self.gf.shape[0]
+        idx = i * n + j
+        return self.cp[idx]
+
+
     # def init_grid_fields(self, grid_n:int):
     #     # GPU grid parameters
     #     self.list_head = ti.field(dtype=Integer, shape=grid_n * grid_n)
@@ -707,6 +790,7 @@ class DEMSolver:
     #                         name="grain_count")
     #     self.column_sum = ti.field(dtype=Integer, shape=grid_n, name="column_sum")
     #     self.prefix_sum = ti.field(dtype=Integer, shape=(grid_n, grid_n), name="prefix_sum")
+
 
     @ti.kernel
     def clear_state(self):
@@ -720,7 +804,7 @@ class DEMSolver:
 
     @ti.kernel
     def apply_body_force(self):
-        #alias
+        # alias
 
         # Gravity
         gf = ti.static(self.gf)
@@ -733,7 +817,7 @@ class DEMSolver:
         '''
         Add GLOBAL damping for EBPM, GLOBAL damping is assigned to particles
         '''
-        #alias
+        # alias
         # gf = ti.static(self.gf)
         t_d = 0.0 # Denver Pilphis: hard coding - should be modified in the future
         for i in gf:
@@ -798,8 +882,11 @@ class DEMSolver:
 
     @ti.kernel
     def resolve_collision(self):
-        for i,j in self.collision_pairs:
-            self.resolve(i,j)
+        # for i,j in self.collision_pairs:
+        #     self.resolve(i,j)
+        size = self.gf.shape[0]
+        for i,j in ti.ndrange(size, size):
+            if(self.get_collision_bit(i,j)): self.resolve(i, j)
     
     
     @ti.func
@@ -810,18 +897,19 @@ class DEMSolver:
         # alias
         gf = ti.static(self.gf)
         cf = ti.static(self.cf)
+        
         eval = False
         # Particle-particle contacts
-        if (cf[i, j].isActive): # Existing contact
+        
+        if (ti.is_active(self.cfn, [i,j]) and self.cf[i,j].isActive): # Existing contact
             if (cf[i, j].isBonded): # Bonded contact
                 eval = True # Bonded contact must exist. Go to evaluation and if bond fails, the contact state will change thereby.
-                pass
             else: # Non-bonded contact, should check whether two particles are still in contact
                 if (- gf[i].radius - gf[j].radius + tm.length(gf[j].position - gf[i].position) < 0): # Use PFC's gap < 0 criterion
                     eval = True
-                    pass 
                 else:
-                    cf[i, j].isActive = 0
+                    self.cf[i,j].isActive = 0
+                    ti.deactivate(self.cfn, [i,j])
         else:
             if (- gf[i].radius - gf[j].radius + tm.length(gf[j].position - gf[i].position) < 0): # Use PFC's gap < 0 criterion
                 cf[i, j] = Contact( # Hertz-Mindlin model
@@ -919,14 +1007,17 @@ class DEMSolver:
                 if (sigma_c_max >= cf[i, j].compressiveStrength): # Compressive failure
                     cf[i, j].isBonded = 0
                     cf[i, j].isActive = 0
+                    ti.deactivate(self.cfn, [i,j])
                     # print(f"Bond compressive failure at: {i}, {j}");
                 elif (sigma_t_max >= cf[i, j].tensileStrength): # Tensile failure
                     cf[i, j].isBonded = 0
                     cf[i, j].isActive = 0
+                    ti.deactivate(self.cfn, [i,j])
                     # print(f"Bond tensile failure at: {i}, {j}\n");
                 elif (tau_max >= cf[i, j].shearStrength): # Shear failure
                     cf[i, j].isBonded = 0
                     cf[i, j].isActive = 0
+                    ti.deactivate(self.cfn, [i,j])
                     # print(f"Bond shear failure at: {i}, {j}\n");
                 else: # Intact bond, need to conduct force to particles
                     # Notice the inverse of signs due to Newton's third law
@@ -947,8 +1038,8 @@ class DEMSolver:
                 delta_n = ti.abs(gap) # For parameter calculation only
 
                 # For debug only
-                if (delta_n > 0.05 * ti.min(gf[i].radius, gf[j].radius)):
-                    print("WARNING: Overlap particle-particle exceeds 0.05");
+                # if (delta_n > 0.05 * ti.min(gf[i].radius, gf[j].radius)):
+                #     print("WARNING: Overlap particle-particle exceeds 0.05");
                 
                 cf[i, j].position = gf[i].position + tm.normalize(gf[j].position - gf[i].position) * (gf[i].radius - delta_n)
                 r_i = cf[i, j].position - gf[i].position
@@ -1017,7 +1108,8 @@ class DEMSolver:
 
     @ti.func
     def on_collision(self, i : Integer, j : Integer):
-        self.collision_pairs[i,j] = 1
+        # self.collision_pairs[i,j] = 1
+        self.set_collision_bit(i,j)
 
 
     @ti.func
@@ -1057,8 +1149,8 @@ class DEMSolver:
         delta_n = ti.abs(gap) # For parameter calculation only
 
         # For debug only
-        if (delta_n > 0.05 * gf[i].radius):
-            print("WARNING: Overlap particle-wall exceeds 0.05");
+        # if (delta_n > 0.05 * gf[i].radius):
+        #     print("WARNING: Overlap particle-wall exceeds 0.05");
 
         r_i = - distance * wf[j].normal / ti.abs(distance) * (ti.abs(distance) + delta_n / 2.0)
         wcf[i, j].position = gf[i].position + r_i
@@ -1182,26 +1274,29 @@ class DEMSolver:
                 force_b = Vector3(0.0, 0.0, 0.0),
                 moment_b = Vector3(0.0, 0.0, 0.0),
             )
-    
+
 
     def bond(self):
         '''
         Similar to contact, but runs only once at the beginning
         '''
         # In example 911, brute detection has better efficiency
-        # self.bpcd.resolve_collision(self.gf.position, self.gf.radius, self.bond_detect)
-        self.bpcd.brute_resolve_collision(self.gf.position, self.gf.contactRadius, self.bond_detect)
+        self.bpcd.resolve_collision(self.gf.position, self.gf.contactRadius, self.bond_detect)
+        # self.bpcd.brute_resolve_collision(self.gf.position, self.gf.contactRadius, self.bond_detect)
+
 
     # Neighboring search
     def contact(self):
         '''
         Handle the collision between grains.
         '''
-        self.collision_node.deactivate_all()
+        # self.collision_node.deactivate_all()
+        self.cp.fill(0)
         # In example 911, brute detection has better efficiency
-        # self.bpcd.resolve_collision(self.gf.position, self.gf.radius, self.on_collision)
-        self.bpcd.brute_resolve_collision(self.gf.position, self.gf.contactRadius, self.on_collision)
+        self.bpcd.resolve_collision(self.gf.position, self.gf.contactRadius, self.on_collision)
+        # self.bpcd.brute_resolve_collision(self.gf.position, self.gf.contactRadius, self.on_collision)
         self.resolve_collision()
+
 
     def run_simulation(self):
         self.clear_state()
@@ -1215,8 +1310,10 @@ class DEMSolver:
         # Time integration
         self.update()
 
+
     def init_simulation(self):
         self.bond()
+
 
 #======================================================================
 # basic setup
@@ -1230,15 +1327,14 @@ window_size = 1024  # Number of pixels of the window
 if __name__ == '__main__':
     config = DEMSolverConfig()
     solver = DEMSolver(config)
-    domain_min = Vector3(-5,-5,-5)
-    domain_max = Vector3(0.1,5,5)
-    solver.init_particle_fields("input.p4p",domain_min,domain_max)
+    domain_min = set_domain_min
+    domain_max = set_domain_max
+    solver.init_particle_fields(set_init_particles,domain_min,domain_max)
     print(f"hash table size = {solver.bpcd.hash_table.shape[0]}")
     
-    
     step = 0
+    elapsed_time = 0.0
     solver.init_simulation()
-    solver.save(f'output_data/{step}', 0)
     if VISUALIZE:
         if SAVE_FRAMES: os.makedirs('output', exist_ok=True)
         gui = ti.GUI('Taichi DEM', (window_size, window_size))
@@ -1256,15 +1352,17 @@ if __name__ == '__main__':
             else:
                 gui.show()
     else: # offline
-        p4p = open('output_data/single.p4p',encoding="UTF-8",mode='w')
-        p4c = open('output_data/single.p4c',encoding="UTF-8",mode='w')
-        solver.save_single(p4p,p4c,solver.config.dt * step)
+        solver.save('output', 0)
+        #p4p = open('output',encoding="UTF-8",mode='w')
+        #p4c = open('output',encoding="UTF-8",mode='w')
+        #solver.save_single(p4p,p4c,solver.config.dt * step)
         while step < config.nsteps:
             for _ in range(config.saving_interval_steps): 
                 step += 1
+                elapsed_time += config.dt
                 solver.run_simulation()
-            solver.save_single(p4p,p4c,solver.config.dt * step)
-            solver.save(f'output_data/{step}', solver.config.dt * step) # Denver Pilphis: problematic - for variant dt this does not work
+            #solver.save_single(p4p,p4c,solver.config.dt * step)
+            solver.save('output', elapsed_time)
             print(f"solved steps: {step}")
-        p4p.close()
-        p4c.close()
+        #p4p.close()
+        #p4c.close()
