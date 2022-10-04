@@ -20,6 +20,7 @@
 # 5. As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates;
 # 6. As a bond model is implemented, particle breakage can be simulated.
 
+from math import pi
 import taichi as ti
 import taichi.math as tm
 import os
@@ -31,6 +32,7 @@ import time
 #=====================================
 Real = ti.f64
 Integer = ti.i32
+Byte = ti.i8
 Vector2 = ti.types.vector(2, Real)
 Vector3 = ti.types.vector(3, Real)
 Vector4 = ti.types.vector(4, Real)
@@ -43,17 +45,45 @@ EBPMStiffnessMatrix = ti.types.matrix(12, 12, Real)
 EBPMForceDisplacementVector = ti.types.vector(12, Real)
 
 #=====================================
-# DEM Problem Configuration
+# DEM Simulation Configuration
 #=====================================
 set_domain_min: Vector3 = Vector3(-5,-5,-5)
 set_domain_max: Vector3 = Vector3(0.1,5,5)
+
 set_init_particles: str = "Resources/cube_911_particles_impact.p4p"
+
+set_particle_contact_radius_multiplier: Real = 1.1;
+set_particle_elastic_modulus: Real = 7e10;
+set_particle_poisson_ratio: Real = 0.25;
+
+set_wall_normal: Vector3 = Vector3(1.0, 0.0, 0.0);
+set_wall_distance: Real = 0.01;
+set_wall_density: Real = 7800.0;
+set_wall_elastic_modulus: Real = 2e11;
+set_wall_poisson_ratio: Real = 0.25;
+
+set_bond_radius_ratio: Real = 0.5;
+set_bond_elastic_modulus: Real = 28e9;
+set_bond_poission_ratio: Real = 0.2;
+set_bond_compressive_strength: Real = 3e8;
+set_bond_tensile_strength: Real = 6e7;
+set_bond_shear_strength: Real = 6e7;
+
+set_pp_coefficient_friction: Real = 0.3;
+set_pp_coefficient_restitution: Real = 0.9;
+set_pp_coefficient_rolling_resistance: Real = 0.01;
+
+set_pw_coefficient_friction: Real = 0.35;
+set_pw_coefficient_restitution: Real = 0.7;
+set_pw_coefficient_rolling_resistance: Real = 0.01;
 
 class DEMSolverConfig:
     def __init__(self):
         # Gravity, a global parameter
         # Denver Pilphis: in this example, we assign no gravity
         self.gravity : Vector3 = Vector3(0.0, 0.0, 0.0)
+        # Global damping coefficient
+        self.global_damping = 0.0;
         # Time step, a global parameter
         self.dt : Real = 1e-7  # Larger dt might lead to unstable results.
         self.target_time : Real = 0.001
@@ -380,19 +410,37 @@ class BPCD:
 #======================================
 # Data Class Definition
 #======================================
+# Material property
+@ti.dataclass
+class Material: # Size: 24B
+    # Material attributes
+    density: Real  # Density, double
+    elasticModulus: Real  # Elastic modulus, double
+    poissonRatio: Real # Poisson's ratio, double
+
+# Surface interaction property
+@ti.dataclass
+class Surface: # Size: 72B
+    # Hertz-Mindlin parameters
+    coefficientFriction: Real # Friction coefficient, double
+    coefficientRestitution: Real # Coefficient of resitution, double
+    coefficientRollingResistance: Real # Coefficient of rolling resistance, double
+    # EBPM parameters
+    radius_ratio : Real # Section radius ratio
+    elasticModulus : Real # Elastic modulus of the bond
+    poissonRatio : Real # Possion's ratio of the bond
+    compressiveStrength: Real # Compressive strengthrotationMatrixInte of the bond
+    tensileStrength: Real # Tensile strength of the bond
+    shearStrength: Real # Shear strength of the bond
+
 # Particle in DEM
 # Denver Pilphis: keep spherical shape first, added particle attributes to make the particle kinematically complete
 @ti.dataclass
-class Grain:
-    # Material attributes
-    # At this stage, the material attributes are written here
+class Grain: # Size: 296B
     ID: Integer # Record Grain ID
-    density: Real  # Density, double
-    mass: Real # Mass, double
+    materialType: Integer # Type number of material
     radius: Real  # Radius, double
     contactRadius: Real
-    elasticModulus: Real  # Elastic modulus, double
-    poissonRatio: Real # Poisson's ratio, double
     # Translational attributes, all in GLOBAL coordinates
     position: Vector3  # Position, Vector3
     velocity: Vector3  # Velocity, Vector3
@@ -405,11 +453,10 @@ class Grain:
     inertia: DEMMatrix # Moment of inertia tensor, 3 * 3 matrix with double
     moment: Vector3 # Total moment (including torque), Vector3
 
-
 # Wall in DEM
 # Only premitive wall is implemented
 @ti.dataclass
-class Wall:
+class Wall: # Size: 36B
     # Wall equation: Ax + By + Cz - D = 0
     # Reference: Peng and Hanley (2019) Contact detection between convex polyhedra and superquadrics in discrete element codes.
     # https://doi.org/10.1016/j.powtec.2019.07.082
@@ -417,10 +464,7 @@ class Wall:
     normal: Vector3 # Outer normal vector of the wall, [A, B, C]
     distance: Real # Distance between origin and the wall, D
     # Material properties
-    density: Real # Density of the wall
-    elasticModulus: Real # Elastic modulus of the wall
-    poissonRatio: Real # Poisson's ratio of the wall
-
+    materialType: Integer
 
 # Contact in DEM
 # In this example, the Edinburgh Bond Particle Model (EBPM), along with Hertz-Mindlin model, is implemented
@@ -429,36 +473,31 @@ class Wall:
 # Reference: Mindlin and Deresiewicz (1953) Elastic spheres in contact under varying oblique forces.
 # https://doi.org/10.1115/1.4010702
 @ti.dataclass
-class Contact:
+class Contact: # Size: 136B
     # Contact status
     isActive : Integer # Contact exists: 1 - exist 0 - not exist
     isBonded : Integer # Contact is bonded: 1 - bonded, use EBPM 0 - unbonded, use Hertz-Mindlin
     # Common Parameters
-    rotationMatrix : DEMMatrix # Rotation matrix from global to local system of the contact
+    materialType_i: Integer
+    materialType_j: Integer
+    # rotationMatrix : DEMMatrix # Rotation matrix from global to local system of the contact
     position : Vector3 # Position of contact point in GLOBAL coordinate
-    # EBPM parameters
-    radius_ratio : Real # Section radius ratio
+
     # radius : Real # Section radius: r = rratio * min(r1, r2), temporarily calculated in evaluation
-    length : Real # Length of the bond
-    elasticModulus : Real # Elastic modulus of the bond
-    poissonRatio : Real # Possion's ratio of the bond
-    compressiveStrength: Real # Compressive strength of the bond
-    tensileStrength: Real # Tensile strength of the bond
-    shearStrength: Real # Shear strength of the bond
+    # length : Real # Length of the bond
+
+    # EBPM parts
     force_a : Vector3 # Contact force at side a in LOCAL coordinate
     moment_a : Vector3 # Contact moment/torque at side a in LOCAL coordinate
-    force_b : Vector3 # Contact force at side b in LOCAL coordinate
+    # force_b = - force_a due to equilibrium
+    # force_b : Vector3 # Contact force at side b in LOCAL coordinate
     moment_b : Vector3 # Contact moment/torque at side b in LOCAL coordinate
-    # Hertz-Mindlin parameters
-    # normalStiffness: Real # Normal stiffness, middleware parameter only
-    # shearStiffness: Real # Shear stiffness, middleware parameter only
-    coefficientFriction: Real # Friction coefficient, double
-    coefficientRestitution: Real # Coefficient of resitution, double
-    coefficientRollingResistance: Real # Coefficient of rolling resistance, double
+    
+    # Hertz-Mindlin parts
     shear_displacement: Vector3 # Shear displacement stored in the contact
 
 @ti.dataclass
-class IOContact:
+class IOContact: # Size: 64B
     '''
     Contact data for IO
     '''
@@ -473,9 +512,12 @@ class IOContact:
 class DEMSolver:
     def __init__(self, config:DEMSolverConfig):
         self.config:DEMSolverConfig = config
-        # broad phase collisoin detection
+        # Broad phase collisoin detection
         self.bpcd:BPCD
-        # particle fields
+        # Material mapping
+        self.mf:ti.StructField # Material types, n*1 field: 0 - particles; 1 - walls
+        self.surf:ti.StructField # Surface types, n*n field: [0, 0] - particle-particle; [0, 1] == [1, 0] - particle-wall; [1, 1] - wall-wall (insensible)
+        # Particle fields
         self.gf:ti.StructField
         self.cf:ti.StructField
         self.cfn:ti.SNode
@@ -543,16 +585,20 @@ class DEMSolver:
                   "ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ\n"
                   ]
         np_ID = self.gf.ID.to_numpy()
-        np_mass = self.gf.mass.to_numpy()
-        np_density = self.gf.density.to_numpy()
+        np_materialType = self.gf.materialType.to_numpy()
+        np_radius = self.gf.radius.to_numpy()
+        #np_mass = self.gf.mass.to_numpy()
+        #np_density = self.gf.density.to_numpy()
         np_position = self.gf.position.to_numpy()
         np_velocity = self.gf.velocity.to_numpy()
+
+        np_density = self.mf.density.to_numpy()
         for i in range(n):
             # GROUP omitted
             group : int = 0
             ID : int = np_ID[i]
-            volume : float = np_mass[i]/np_density[i]
-            mass : float = np_mass[i]
+            volume : float = 4.0 / 3.0 * pi * np_radius[i] ** 3;
+            mass : float = volume * np_density[np_materialType[i]]
             px : float = np_position[i][0]
             py : float = np_position[i][1]
             pz : float = np_position[i][2]
@@ -577,7 +623,7 @@ class DEMSolver:
         np_position = dense_cf.position.to_numpy()
         np_force_a = dense_cf.force_a.to_numpy()
         np_bonded = dense_cf.isBonded.to_numpy()
-        np_active = dense_cf.isActive.to_numpy()
+        # np_active = dense_cf.isActive.to_numpy()
         ncontact = dense_cf.shape[0]
         snode_tree.destroy()
         
@@ -592,9 +638,9 @@ class DEMSolver:
             cx : float = np_position[k][0];
             cy : float = np_position[k][1];
             cz : float = np_position[k][2];
-            fx : float = np_force_a[k][0]; # Denver Pilphis: the force is not stored in present version
-            fy : float = np_force_a[k][1]; # Denver Pilphis: the force is not stored in present version
-            fz : float = np_force_a[k][2]; # Denver Pilphis: the force is not stored in present version
+            fx : float = np_force_a[k][0];
+            fy : float = np_force_a[k][1];
+            fz : float = np_force_a[k][2];
             bonded : int = np_bonded[k];
             ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
 
@@ -602,68 +648,6 @@ class DEMSolver:
             p4cfile.write(line);
         tk2 = time.time()
         print(f"save time cost = {tk2 - tk1}")
-
-    # def save_single(self, p4pfile, p4cfile, time:float):
-    #     '''
-    #     save the solved data at <time> to <p4pfile> and <p4cfile>
-    #     '''
-    #     # P4P file for particles
-    #     n = self.gf.shape[0]
-    #     p4pfile.write("TIMESTEP  PARTICLES\n")
-    #     p4pfile.write(f'{time} {n}\n')
-    #     p4pfile.write("ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ\n")
-    #     np_ID = self.gf.ID.to_numpy()
-    #     np_mass = self.gf.mass.to_numpy()
-    #     np_density = self.gf.density.to_numpy()
-    #     np_position = self.gf.position.to_numpy()
-    #     np_velocity = self.gf.velocity.to_numpy()
-    #     for i in range(n):
-    #         # GROUP omitted
-    #         group : int = 0
-    #         ID : int = np_ID[i]
-    #         volume : float = np_mass[i]/np_density[i]
-    #         mass : float = np_mass[i]
-    #         px : float = np_position[i][0]
-    #         py : float = np_position[i][1]
-    #         pz : float = np_position[i][2]
-    #         vx : float = np_velocity[i][0]
-    #         vy : float = np_velocity[i][1]
-    #         vz : float = np_velocity[i][2]
-    #         p4pfile.write(f'{ID} {group} {volume} {mass} {px} {py} {pz} {vx} {vy} {vz}\n')
-
-    #     # P4C file for contacts
-    #     ccache: list = ["P1  P2  CX  CY  CZ  FX  FY  FZ  CONTACT_IS_BONDED\n"];
-    #     ncontact: int = 0;
-    #     np_ID = self.gf.ID.to_numpy()
-        
-        
-    #     np_active = self.cf.isActive.to_numpy()
-    #     np_position = self.cf.position.to_numpy()
-    #     np_force_a = self.cf.force_a.to_numpy()
-    #     np_bonded = self.cf.isBonded.to_numpy()
-    #     for i in range(n):
-    #         for j in range(n):
-    #             if (i >= j): continue;
-    #             if (not np_active[i][j]): continue;
-    #             # GROUP omitted
-    #             p1 : int = np_ID[i];
-    #             p2 : int = np_ID[j];
-    #             cx : float = np_position[i, j][0];
-    #             cy : float = np_position[i, j][1];
-    #             cz : float = np_position[i, j][2];
-    #             fx : float = np_force_a[i, j][0]; # Denver Pilphis: the force is not stored in present version
-    #             fy : float = np_force_a[i, j][1]; # Denver Pilphis: the force is not stored in present version
-    #             fz : float = np_force_a[i, j][2]; # Denver Pilphis: the force is not stored in present version
-    #             bonded : int = np_bonded[i, j];
-    #             ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
-    #             ncontact += 1;
-
-    #     # n = self.gf.shape[0]
-    #     p4cfile.write("TIMESTEP  CONTACTS\n")
-    #     p4cfile.write(f'{time} {ncontact}\n')
-    #     for i in range (ncontact + 1): # Include the title line
-    #         p4cfile.write(ccache[i]);
-
 
     def init_particle_fields(self, file_name:str, domain_min:Vector3, domain_max:Vector3):
         fp = open(file_name, encoding="UTF-8")
@@ -677,8 +661,9 @@ class DEMSolver:
         self.gf = Grain.field(shape=(n))
         self.wf = Wall.field(shape = nwall)
         self.wcf = Contact.field(shape = (n,nwall))
-        # self.particle_id = ti.field(dtype=Integer, shape=n, name="particle_id")
-        # cf.fill(Contact()) # TODO: fill all NULLs
+        # Denver Pilphis: hard-coding
+        self.mf = Material.field(shape = 2)
+        self.surf = Surface.field(shape = (2,2))
         
         line = fp.readline() # "ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ" line
         # Processing particles
@@ -691,6 +676,9 @@ class DEMSolver:
         np_velocity = np.zeros((n,3))
         np_mass = np.zeros(n, float)
         np_inertia = np.zeros((n,3,3))
+
+        # Extract density, hard coding
+        material_density: float = 0.0;
         for _ in range(n):
             line = fp.readline()
             if (line==''): break
@@ -707,6 +695,8 @@ class DEMSolver:
             vy : Real = float(tokens[8])
             vz : Real = float(tokens[9])
             density : Real = mass / volume
+            # Hard coding
+            material_density = density;
             radius : Real = tm.pow(volume * 3.0 / 4.0 / tm.pi, 1.0 / 3.0)
             inertia : Real = 2.0 / 5.0 * mass * radius * radius
             np_ID[i] = id
@@ -725,32 +715,59 @@ class DEMSolver:
             np_inertia[i] = inertia * ti.Matrix.diag(3, 1.0)
         fp.close()
         self.gf.ID.from_numpy(np_ID)
-        self.gf.density.from_numpy(np_density)
-        self.gf.mass.from_numpy(np_mass)
+        self.gf.materialType.fill(0); # Denver Pilphis: hard coding
         self.gf.radius.from_numpy(np_radius)
-        self.gf.contactRadius.from_numpy(np_radius * 1.1)
+        self.gf.contactRadius.from_numpy(np_radius * set_particle_contact_radius_multiplier)
         self.gf.position.from_numpy(np_position)
         self.gf.velocity.from_numpy(np_velocity)
-        self.gf.inertia.from_numpy(np_inertia)
-        
         self.gf.acceleration.fill(Vector3(0.0, 0.0, 0.0))
-        self.gf.force.fill(Vector3(0.0, 0.0, 0.0))
+        self.gf.force.fill(Vector3(0.0, 0.0, 0.0))        
         self.gf.quaternion.fill(Vector4(1.0, 0.0, 0.0, 0.0))
         self.gf.omega.fill((0.0, 0.0, 0.0))
         self.gf.omega_dot.fill(Vector3(0.0, 0.0, 0.0))
+        self.gf.inertia.from_numpy(np_inertia)
         self.gf.moment.fill(Vector3(0.0, 0.0, 0.0))
-        self.gf.elasticModulus.fill(7e10) # Denver Pilphis: hard coding need to be modified in the future
-        self.gf.poissonRatio.fill(0.25) # Denver Pilphis: hard coding need to be modified in the future
         # Input wall
-        # Denver Pilphis: hard coding: need to be modified in the future
+        # Denver Pilphis: hard coding - need to be modified in the future
         for j in range(self.wf.shape[0]):
-            self.wf[j].normal = Vector3(1.0, 0.0, 0.0) # Outer normal vector of the wall, [A, B, C]
-            self.wf[j].distance = 0.01 # Distance between origin and the wall, D
-            # Material properties
-            self.wf[j].density = 7800.0 # Density of the wall
-            self.wf[j].elasticModulus = 2e11 # Elastic modulus of the wall
-            self.wf[j].poissonRatio = 0.25 # Poisson's ratio of the wall
+            self.wf[j].normal = set_wall_normal; # Outer normal vector of the wall, [A, B, C]
+            self.wf[j].distance = set_wall_distance; # Distance between origin and the wall, D
+            # Material property
+            self.wf[j].materialType = 1; # Hard coding
+
+        # Material
+        # Particle
+        self.mf[0].density = material_density;
+        self.mf[0].elasticModulus = set_particle_elastic_modulus;
+        self.mf[0].poissonRatio = set_particle_poisson_ratio;
+        # Wall
+        self.mf[1].density = set_wall_density;
+        self.mf[1].elasticModulus = set_wall_elastic_modulus;
+        self.mf[1].poissionRatio = set_wall_poisson_ratio;
+
+        # Surface
+        # Particle-particle, including EBPM and Hertz-Mindlin model parameters
+        # HM
+        self.surf[0, 0].coefficientFriction = set_pp_coefficient_friction;
+        self.surf[0, 0].coefficientRestitution = set_pp_coefficient_restitution;
+        self.surf[0, 0].coefficientRollingResistance = set_pp_coefficient_rolling_resistance;
+        # EBPM
+        self.surf[0, 0].radius_ratio = set_bond_radius_ratio;
+        self.surf[0, 0].elasticModulus = set_bond_elastic_modulus;
+        self.surf[0, 0].poissonRatio = set_bond_poission_ratio;
+        self.surf[0, 0].compressiveStrength = set_bond_compressive_strength;
+        self.surf[0, 0].tensileStrength = set_bond_tensile_strength;
+        self.surf[0, 0].shearStrength = set_bond_shear_strength;
+        # Particle-wall, only Hertz-Mindlin model parameters
+        self.surf[0, 1].coefficientFriction = set_pw_coefficient_friction;
+        self.surf[0, 1].coefficientRestitution = set_pw_coefficient_restitution;
+        self.surf[0, 1].coefficientRollingResistance = set_pw_coefficient_rolling_resistance;
         
+        # Symmetric matrix for surf
+        self.surf[1, 0] = self.surf[0, 1];
+
+        # surf[1, 1] is insensible
+
         self.bpcd = BPCD.create(n, max_radius * 1.1, domain_min, domain_max)
         
         u1 = ti.types.quant.int(1, False)
@@ -779,19 +796,6 @@ class DEMSolver:
         return self.cp[idx]
 
 
-    # def init_grid_fields(self, grid_n:int):
-    #     # GPU grid parameters
-    #     self.list_head = ti.field(dtype=Integer, shape=grid_n * grid_n)
-    #     self.list_cur = ti.field(dtype=Integer, shape=grid_n * grid_n)
-    #     self.list_tail = ti.field(dtype=Integer, shape=grid_n * grid_n)
-
-    #     self.grain_count = ti.field(dtype=Integer,
-    #                         shape=(grid_n, grid_n),
-    #                         name="grain_count")
-    #     self.column_sum = ti.field(dtype=Integer, shape=grid_n, name="column_sum")
-    #     self.prefix_sum = ti.field(dtype=Integer, shape=(grid_n, grid_n), name="prefix_sum")
-
-
     @ti.kernel
     def clear_state(self):
         #alias
@@ -808,9 +812,11 @@ class DEMSolver:
 
         # Gravity
         gf = ti.static(self.gf)
+        mf = ti.static(self.mf)
         g = self.config.gravity
         for i in gf:
-            gf[i].force += g * gf[i].mass
+            type_i = gf[i].materialType;
+            gf[i].force += mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3 * g;
             gf[i].moment += Vector3(0.0, 0.0, 0.0)
 
         # GLOBAL damping
@@ -819,7 +825,7 @@ class DEMSolver:
         '''
         # alias
         # gf = ti.static(self.gf)
-        t_d = 0.0 # Denver Pilphis: hard coding - should be modified in the future
+        t_d = config.global_damping;
         for i in gf:
             damp_force = Vector3(0.0, 0.0, 0.0)
             damp_moment = Vector3(0.0, 0.0, 0.0)
@@ -835,6 +841,7 @@ class DEMSolver:
     def update(self):
         #alias
         gf = ti.static(self.gf)
+        mf = ti.static(self.mf)
         dt = self.config.dt
 
         # kinematic_energy : Real = 0.0;
@@ -843,7 +850,8 @@ class DEMSolver:
             # Translational
             # Velocity Verlet integrator is adopted
             # Reference: https://www.algorithm-archive.org/contents/verlet_integration/verlet_integration.html
-            gf[i].acceleration = gf[i].force / gf[i].mass
+            type_i = gf[i].materialType
+            gf[i].acceleration = gf[i].force / (mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3)
             # print(f"{gf[i].ID}.force = {gf[i].force[0]}")
             gf[i].position += gf[i].velocity * dt + 0.5 * gf[i].acceleration * dt ** 2
             gf[i].velocity += gf[i].acceleration * dt
@@ -897,10 +905,12 @@ class DEMSolver:
         # alias
         gf = ti.static(self.gf)
         cf = ti.static(self.cf)
+
+        mf = ti.static(self.mf)
+        surf = ti.static(self.surf)
         
         eval = False
         # Particle-particle contacts
-        
         if (ti.is_active(self.cfn, [i,j]) and self.cf[i,j].isActive): # Existing contact
             if (cf[i, j].isBonded): # Bonded contact
                 eval = True # Bonded contact must exist. Go to evaluation and if bond fails, the contact state will change thereby.
@@ -915,9 +925,11 @@ class DEMSolver:
                 cf[i, j] = Contact( # Hertz-Mindlin model
                     isActive = 1,
                     isBonded = 0,
-                    coefficientFriction = 0.3, # Denver Pilphis: hard coding need to be modified in the future
-                    coefficientRestitution = 0.9, # Denver Pilphis: hard coding need to be modified in the future
-                    coefficientRollingResistance = 0.01, # Denver Pilphis: hard coding need to be modified in the future
+                    materialType_i = 0,
+                    materialType_j = 0,
+                    force_a = Vector3(0.0, 0.0, 0.0),
+                    moment_a = Vector3(0.0, 0.0, 0.0),
+                    moment_b = Vector3(0.0, 0.0, 0.0),
                     shear_displacement = Vector3(0.0, 0.0, 0.0)
                 )
                 eval = True # Send to evaluation using Hertz-Mindlin contact model
@@ -932,28 +944,31 @@ class DEMSolver:
             v = tm.cross(a, b)
             s = tm.length(v)
             c = tm.dot(a, b)
+            rotationMatrix = Zero3x3();
             if (s < DoublePrecisionTolerance):
                 if (c > 0.0):
-                    cf[i, j].rotationMatrix = ti.Matrix.diag(3, 1.0);
+                    rotationMatrix = ti.Matrix.diag(3, 1.0);
                 else:
-                    cf[i, j].rotationMatrix = DEMMatrix([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]);
+                    rotationMatrix = DEMMatrix([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]);
             else:
                 vx = DEMMatrix([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
-                cf[i, j].rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
+                rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
                 
-            cf[i, j].length = tm.length(gf[j].position - gf[i].position)
+            length = tm.length(gf[j].position - gf[i].position)
             # Contact evaluation (with contact model)
             if (cf[i, j].isBonded): # Bonded, use EBPM
                 cf[i, j].position = 0.5 * (gf[i].position + gf[j].position);
-                disp_a = cf[i, j].rotationMatrix @ gf[i].velocity * dt
-                disp_b = cf[i, j].rotationMatrix @ gf[j].velocity * dt
-                rot_a = cf[i, j].rotationMatrix @ gf[i].omega * dt
-                rot_b = cf[i, j].rotationMatrix @ gf[j].omega * dt
+                disp_a = rotationMatrix @ gf[i].velocity * dt
+                disp_b = rotationMatrix @ gf[j].velocity * dt
+                rot_a = rotationMatrix @ gf[i].omega * dt
+                rot_b = rotationMatrix @ gf[j].omega * dt
                 dispVector = EBPMForceDisplacementVector([disp_a, rot_a, disp_b, rot_b])
-                r_b = cf[i, j].radius_ratio * tm.min(gf[i].radius, gf[j].radius)
-                L_b = cf[i, j].length
-                E_b = cf[i, j].elasticModulus
-                nu = cf[i, j].poissonRatio
+                type_i: Integer = gf[i].materialType;
+                type_j: Integer = gf[j].materialType;
+                r_b = surf[type_i, type_j].radius_ratio * tm.min(gf[i].radius, gf[j].radius)
+                L_b = length
+                E_b = surf[type_i, type_j].elasticModulus
+                nu = surf[type_i, type_j].poissonRatio
                 I_b = (r_b ** 4) * tm.pi / 4.0
                 phi = 20.0 / 3.0 * (r_b ** 2) / (L_b ** 2) * (1.0 + nu)
                 A_b = tm.pi * (r_b ** 2)
@@ -988,33 +1003,34 @@ class DEMSolver:
                 forceVector = K @ dispVector
                 cf[i, j].force_a += Vector3(forceVector[0], forceVector[1], forceVector[2])
                 cf[i, j].moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5])
-                cf[i, j].force_b += Vector3(forceVector[6], forceVector[7], forceVector[8])
+                force_b = - cf[i, j].force_a;
+                # cf[i, j].force_b += Vector3(forceVector[6], forceVector[7], forceVector[8])
                 cf[i, j].moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11])
                 
                 # For debug only
                 # Check equilibrium
-                if (tm.length(cf[i, j].force_a + cf[i, j].force_b) > DoublePrecisionTolerance):
-                    print("Equilibrium error.")
+                # if (tm.length(cf[i, j].force_a + cf[i, j].force_b) > DoublePrecisionTolerance):
+                #     print("Equilibrium error.")
 
                 # Check whether the bond fails
-                sigma_c_a = cf[i, j].force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[i, j].moment_a[1] ** 2 + cf[i, j].moment_a[2] ** 2)
-                sigma_c_b = cf[i, j].force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[i, j].moment_b[1] ** 2 + cf[i, j].moment_b[2] ** 2)
+                sigma_c_a = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[i, j].moment_a[1] ** 2 + cf[i, j].moment_a[2] ** 2)
+                sigma_c_b = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[i, j].moment_b[1] ** 2 + cf[i, j].moment_b[2] ** 2)
                 sigma_c_max = -tm.min(sigma_c_a, sigma_c_b)
                 sigma_t_a = sigma_c_a
                 sigma_t_b = sigma_c_b
                 sigma_t_max = tm.max(sigma_t_a, sigma_t_b)
                 tau_max = ti.abs(cf[i, j].moment_a[0]) * r_b / 2.0 / I_b + 4.0 / 3.0 / A_b * tm.sqrt(cf[i, j].force_a[1] ** 2 + cf[i, j].force_a[2] ** 2)
-                if (sigma_c_max >= cf[i, j].compressiveStrength): # Compressive failure
+                if (sigma_c_max >= surf[type_i, type_j].compressiveStrength): # Compressive failure
                     cf[i, j].isBonded = 0
                     cf[i, j].isActive = 0
                     ti.deactivate(self.cfn, [i,j])
                     # print(f"Bond compressive failure at: {i}, {j}");
-                elif (sigma_t_max >= cf[i, j].tensileStrength): # Tensile failure
+                elif (sigma_t_max >= surf[type_i, type_j].tensileStrength): # Tensile failure
                     cf[i, j].isBonded = 0
                     cf[i, j].isActive = 0
                     ti.deactivate(self.cfn, [i,j])
                     # print(f"Bond tensile failure at: {i}, {j}\n");
-                elif (tau_max >= cf[i, j].shearStrength): # Shear failure
+                elif (tau_max >= surf[type_i, type_j].shearStrength): # Shear failure
                     cf[i, j].isBonded = 0
                     cf[i, j].isActive = 0
                     ti.deactivate(self.cfn, [i,j])
@@ -1022,10 +1038,10 @@ class DEMSolver:
                 else: # Intact bond, need to conduct force to particles
                     # Notice the inverse of signs due to Newton's third law
                     # and LOCAL to GLOBAL coordinates
-                    ti.atomic_add(gf[i].force, ti.Matrix.inverse(cf[i, j].rotationMatrix) @ (-cf[i, j].force_a))
-                    ti.atomic_add(gf[j].force, ti.Matrix.inverse(cf[i, j].rotationMatrix) @ (-cf[i, j].force_b))
-                    ti.atomic_add(gf[i].moment, ti.Matrix.inverse(cf[i, j].rotationMatrix) @ (-cf[i, j].moment_a))
-                    ti.atomic_add(gf[j].moment, ti.Matrix.inverse(cf[i, j].rotationMatrix) @ (-cf[i, j].moment_b))
+                    ti.atomic_add(gf[i].force, ti.Matrix.inverse(rotationMatrix) @ (-cf[i, j].force_a))
+                    ti.atomic_add(gf[j].force, ti.Matrix.inverse(rotationMatrix) @ (-force_b))
+                    ti.atomic_add(gf[i].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[i, j].moment_a))
+                    ti.atomic_add(gf[j].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[i, j].moment_b))
             else: # Non-bonded, use Hertz-Mindlin
                 # Calculation relative translational and rotational displacements
                 # Need to include the impact of particle rotation in contact relative translational displacement
@@ -1034,7 +1050,7 @@ class DEMSolver:
                 # Eqs. (1)-(2)
                 # Implementation reference: https://github.com/CFDEMproject/LIGGGHTS-PUBLIC/blob/master/src/surface_model_default.h
                 # Lines 140-189
-                gap = cf[i, j].length - gf[i].radius - gf[j].radius # gap must be negative to ensure an intact contact
+                gap = length - gf[i].radius - gf[j].radius # gap must be negative to ensure an intact contact
                 delta_n = ti.abs(gap) # For parameter calculation only
 
                 # For debug only
@@ -1047,14 +1063,16 @@ class DEMSolver:
                 # Velocity of a point on the surface of a rigid body
                 v_c_i = tm.cross(gf[i].omega, r_i) + gf[i].velocity
                 v_c_j = tm.cross(gf[j].omega, r_j) + gf[j].velocity
-                v_c = cf[i, j].rotationMatrix @ (v_c_j - v_c_i) # LOCAL coordinate
+                v_c = rotationMatrix @ (v_c_j - v_c_i) # LOCAL coordinate
                 # Parameter calculation
                 # Reference: https://www.cfdem.com/media/DEM/docu/gran_model_hertz.html
-                Y_star = 1.0 / ((1.0 - gf[i].poissonRatio ** 2) / gf[i].elasticModulus + (1.0 - gf[j].poissonRatio ** 2) / gf[j].elasticModulus)
-                G_star = 1.0 / (2.0 * (2.0 - gf[i].poissonRatio) * (1.0 + gf[i].poissonRatio) / gf[i].elasticModulus + 2.0 * (2.0 - gf[j].poissonRatio) * (1.0 + gf[j].poissonRatio) / gf[j].elasticModulus)
+                type_i: Integer = gf[i].materialType;
+                type_j: Integer = gf[j].materialType;
+                Y_star = 1.0 / ((1.0 - mf[type_i].poissonRatio ** 2) / mf[type_i].elasticModulus + (1.0 - mf[type_j].poissonRatio ** 2) / mf[type_j].elasticModulus)
+                G_star = 1.0 / (2.0 * (2.0 - mf[type_i].poissonRatio) * (1.0 + mf[type_i].poissonRatio) / mf[type_i].elasticModulus + 2.0 * (2.0 - mf[type_j].poissonRatio) * (1.0 + mf[type_j].poissonRatio) / mf[type_j].elasticModulus)
                 R_star = 1.0 / (1.0 / gf[i].radius + 1.0 / gf[j].radius)
-                m_star = 1.0 / (1.0 / gf[i].mass + 1.0 / gf[j].mass)
-                beta  = tm.log(cf[i, j].coefficientRestitution) / tm.sqrt(tm.log(cf[i, j].coefficientRestitution) ** 2 + tm.pi ** 2)
+                m_star = 1.0 / (1.0 / (mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3) + 1.0 / (mf[type_j].density * 4.0 / 3.0 * tm.pi * gf[j].radius ** 3))
+                beta  = tm.log(surf[type_i, type_j].coefficientRestitution) / tm.sqrt(tm.log(surf[type_i, type_j].coefficientRestitution) ** 2 + tm.pi ** 2)
                 S_n  = 2.0 * Y_star * tm.sqrt(R_star * delta_n)
                 S_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
                 k_n  = 4.0 / 3.0 * Y_star * tm.sqrt(R_star * delta_n)
@@ -1075,8 +1093,8 @@ class DEMSolver:
                 F[0] = - k_n * gap - gamma_n * v_c[0]
                 # Shear direction - LOCAL - the force towards particle j
                 try_shear_force = - k_t * cf[i, j].shear_displacement
-                if (tm.length(try_shear_force) >= cf[i, j].coefficientFriction * F[0]): # Sliding
-                    ratio : Real = cf[i, j].coefficientFriction * F[0] / tm.length(try_shear_force)
+                if (tm.length(try_shear_force) >= surf[type_i, type_j].coefficientFriction * F[0]): # Sliding
+                    ratio : Real = surf[type_i, type_j].coefficientFriction * F[0] / tm.length(try_shear_force)
                     F[1] = try_shear_force[1] * ratio
                     F[2] = try_shear_force[2] * ratio
                     cf[i, j].shear_displacement[1] = F[1] / k_t
@@ -1089,12 +1107,12 @@ class DEMSolver:
                 
                 # For P4C output
                 cf[i, j].force_a = F;
-                cf[i, j].force_b = -F;
+                # cf[i, j].force_b = -F;
                 # Assigning contact force to particles
                 # Notice the inverse of signs due to Newton's third law
                 # and LOCAL to GLOBAL coordinates
-                F_i_global = ti.Matrix.inverse(cf[i, j].rotationMatrix) @ (-F)
-                F_j_global = ti.Matrix.inverse(cf[i, j].rotationMatrix) @ F
+                F_i_global = ti.Matrix.inverse(rotationMatrix) @ (-F)
+                F_j_global = ti.Matrix.inverse(rotationMatrix) @ F
                 ti.atomic_add(gf[i].force, F_i_global)
                 ti.atomic_add(gf[j].force, F_j_global)
                 # As the force is at contact position
@@ -1121,9 +1139,12 @@ class DEMSolver:
         
         # alias
         gf = ti.static(self.gf)
-        cf = ti.static(self.cf)
+        # cf = ti.static(self.cf)
         wf = ti.static(self.wf)
         wcf = ti.static(self.wcf)
+
+        mf = ti.static(self.mf)
+        surf = ti.static(self.surf)
         
         dt = self.config.dt
         # Contact resolution
@@ -1134,18 +1155,19 @@ class DEMSolver:
         v = tm.cross(a, b)
         s = tm.length(v)
         c = tm.dot(a, b)
+        rotationMatrix = Zero3x3();
         if (s < DoublePrecisionTolerance):
             if (c > 0.0):
-                wcf[i, j].rotationMatrix = ti.Matrix.diag(3, 1.0);
+                rotationMatrix = ti.Matrix.diag(3, 1.0);
             else:
-                wcf[i, j].rotationMatrix = DEMMatrix([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]);
+                rotationMatrix = DEMMatrix([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]);
         else:
             vx = DEMMatrix([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
-            wcf[i, j].rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
+            rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
 
         # Calculation relative translational and rotational displacements
         distance = tm.dot(gf[i].position, wf[j].normal) - wf[j].distance # Distance < 0 means that particle is beneath the plane
-        gap  = ti.abs(distance) - gf[i].radius # gap must be negative
+        gap = ti.abs(distance) - gf[i].radius # gap must be negative
         delta_n = ti.abs(gap) # For parameter calculation only
 
         # For debug only
@@ -1156,14 +1178,16 @@ class DEMSolver:
         wcf[i, j].position = gf[i].position + r_i
         # Velocity of a point on the surface of a rigid body
         v_c_i = tm.cross(gf[i].omega, r_i) + gf[i].velocity
-        v_c = wcf[i, j].rotationMatrix @ (- v_c_i) # LOCAL coordinate
+        v_c = rotationMatrix @ (- v_c_i) # LOCAL coordinate
         # Parameter calculation
         # Reference: https://www.cfdem.com/media/DEM/docu/gran_model_hertz.html
-        Y_star = 1.0 / ((1.0 - gf[i].poissonRatio ** 2) / gf[i].elasticModulus + (1.0 - wf[j].poissonRatio ** 2) / wf[j].elasticModulus)
-        G_star = 1.0 / (2.0 * (2.0 - gf[i].poissonRatio) * (1.0 + gf[i].poissonRatio) / gf[i].elasticModulus + 2.0 * (2.0 - wf[j].poissonRatio) * (1.0 + wf[j].poissonRatio) / wf[j].elasticModulus)
+        type_i: Integer = gf[i].materialType;
+        type_j: Integer = wf[j].materialType;
+        Y_star = 1.0 / ((1.0 - mf[type_i].poissonRatio ** 2) / mf[type_i].elasticModulus + (1.0 - mf[type_j].poissonRatio ** 2) / mf[type_j].elasticModulus)
+        G_star = 1.0 / (2.0 * (2.0 - mf[type_i].poissonRatio) * (1.0 + mf[type_i].poissonRatio) / mf[type_i].elasticModulus + 2.0 * (2.0 - mf[type_j].poissonRatio) * (1.0 + mf[type_j].poissonRatio) / mf[type_j].elasticModulus)
         R_star = gf[i].radius
-        m_star = gf[i].mass
-        beta = tm.log(wcf[i, j].coefficientRestitution) / tm.sqrt(tm.log(wcf[i, j].coefficientRestitution) ** 2 + tm.pi ** 2)
+        m_star = mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3;
+        beta = tm.log(surf[type_i, type_j].coefficientRestitution) / tm.sqrt(tm.log(surf[type_i, type_j].coefficientRestitution) ** 2 + tm.pi ** 2)
         S_n = 2.0 * Y_star * tm.sqrt(R_star * delta_n)
         S_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
         k_n  = 4.0 / 3.0 * Y_star * tm.sqrt(R_star * delta_n)
@@ -1184,8 +1208,8 @@ class DEMSolver:
         F[0] = - k_n * gap - gamma_n * v_c[0]
         # Shear direction - LOCAL - the force towards the wall
         try_shear_force = - k_t * wcf[i, j].shear_displacement
-        if (tm.length(try_shear_force) >= wcf[i, j].coefficientFriction * F[0]): # Sliding
-            ratio = wcf[i, j].coefficientFriction * F[0] / tm.length(try_shear_force)
+        if (tm.length(try_shear_force) >= surf[type_i, type_j].coefficientFriction * F[0]): # Sliding
+            ratio = surf[type_i, type_j].coefficientFriction * F[0] / tm.length(try_shear_force)
             F[1] = try_shear_force[1] * ratio
             F[2] = try_shear_force[2] * ratio
             wcf[i, j].shear_displacement[1] = F[1] / k_t
@@ -1198,13 +1222,13 @@ class DEMSolver:
         
         # For P4C output
         wcf[i, j].force_a = F;
-        wcf[i, j].force_b = -F;
+        # wcf[i, j].force_b = -F;
         # Assigning contact force to particles
         # Notice the inverse of signs due to Newton's third law
         # and LOCAL to GLOBAL coordinates
         # As the force is at contact position
         # additional moments will be assigned to particles
-        F_i_global = ti.Matrix.inverse(wcf[i, j].rotationMatrix) @ (-F)
+        F_i_global = ti.Matrix.inverse(rotationMatrix) @ (-F)
         
         ti.atomic_add(gf[i].force, F_i_global)
         # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
@@ -1237,9 +1261,8 @@ class DEMSolver:
                         wcf[i, j] = Contact( # Hertz-Mindlin model
                             isActive = 1,
                             isBonded = 0,
-                            coefficientFriction = 0.35, # Denver Pilphis: hard coding need to be modified in the future
-                            coefficientRestitution = 0.7, # Denver Pilphis: hard coding need to be modified in the future
-                            coefficientRollingResistance = 0.01, # Denver Pilphis: hard coding need to be modified in the future
+                            materialType_i = 0,
+                            materialType_j = 1,
                             shear_displacement = Vector3(0.0, 0.0, 0.0)
                         )
                         self.evaluate_wall(i, j)
@@ -1255,23 +1278,17 @@ class DEMSolver:
         gf = ti.static(self.gf)
         cf = ti.static(self.cf)
         
-        contact_radius_i = gf[i].radius * 1.1 # Denver Pilphis: hard coding need to be modified in the future
-        contact_radius_j = gf[j].radius * 1.1 # Denver Pilphis: hard coding need to be modified in the future
+        contact_radius_i = gf[i].contactRadius;
+        contact_radius_j = gf[j].contactRadius;
         if (tm.length(gf[j].position - gf[i].position) - contact_radius_i - contact_radius_j < 0.0):
             cf[i, j] = Contact( # Forced to bond contact
                 isActive = 1,
                 isBonded = 1,
-                # EBPM parameters
-                # Denver Pilphis: hard coding need to be modified in the future
-                radius_ratio = 0.5,
-                elasticModulus = 28e9,
-                poissonRatio = 0.2,
-                compressiveStrength = 3e8,
-                tensileStrength = 6e7,
-                shearStrength = 6e7,
+                materialType_i = 0,
+                materialType_j = 0,
                 force_a = Vector3(0.0, 0.0, 0.0),
                 moment_a = Vector3(0.0, 0.0, 0.0),
-                force_b = Vector3(0.0, 0.0, 0.0),
+                # force_b = Vector3(0.0, 0.0, 0.0),
                 moment_b = Vector3(0.0, 0.0, 0.0),
             )
 
