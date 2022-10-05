@@ -53,11 +53,12 @@ set_domain_max: Vector3 = Vector3(0.1,5,5)
 set_init_particles: str = "Resources/cube_911_particles_impact.p4p"
 
 set_particle_contact_radius_multiplier: Real = 1.1;
+set_neiboring_search_safety_factor: Real = 1.2;
 set_particle_elastic_modulus: Real = 7e10;
 set_particle_poisson_ratio: Real = 0.25;
 
 set_wall_normal: Vector3 = Vector3(1.0, 0.0, 0.0);
-set_wall_distance: Real = 0.01;
+set_wall_distance: Real = 0.02;
 set_wall_density: Real = 7800.0;
 set_wall_elastic_modulus: Real = 2e11;
 set_wall_poisson_ratio: Real = 0.25;
@@ -77,6 +78,8 @@ set_pw_coefficient_friction: Real = 0.35;
 set_pw_coefficient_restitution: Real = 0.7;
 set_pw_coefficient_rolling_resistance: Real = 0.01;
 
+set_max_coordinate_number: Integer = 16;
+
 class DEMSolverConfig:
     def __init__(self):
         # Gravity, a global parameter
@@ -92,6 +95,61 @@ class DEMSolverConfig:
         self.saving_interval_time : Real = 1e-5
         self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
 
+class DEMSolverStatistics:
+    class Timer:
+        def __init__(self):
+            self.first:bool = True
+            self.on:bool = False
+            self.start:float = 0.0
+            self.total = 0.0
+
+        def tick(self):
+            ti.sync()
+            if(self.on == False): 
+                self.start = time.time()
+                self.on = True
+            else:
+                if(self.first): self.first = False
+                else: self.total += time.time() - self.start
+                self.on = False
+        
+        def __str__(self):
+            return str(self.total)
+        
+    def __init__(self):
+        self.SolveTime = self.Timer()
+        
+        self.BroadPhaseDetectionTime = self.Timer()
+        self.HashTableSetupTime = self.Timer()
+        self.PrefixSumTime = self.Timer()
+        self.CollisionPairSetupTime = self.Timer()
+        
+        self.ContactResolveTime = self.Timer()
+        self.ContactTime = self.Timer()
+        self.ResolveWallTime = self.Timer()
+        self.ApplyForceTime = self.Timer()
+        self.UpdateTime = self.Timer()
+        
+    
+    def pct(self, x:Timer):
+        if(self.SolveTime.total == 0.0): return '0%'
+        return str(x.total / self.SolveTime.total * 100) + '%'
+    
+    def report(self):
+        print(f"Total              = {self.SolveTime}\n"
+              f"ApplyForceTime     = {self.ApplyForceTime}({self.pct(self.ApplyForceTime)})\n"
+              f"UpdateTime         = {self.UpdateTime}({self.pct(self.UpdateTime)})\n"
+              f"ResolveWallTime    = {self.ResolveWallTime}({self.pct(self.ResolveWallTime)})\n"
+              f"ContactTime        = {self.ContactTime}({self.pct(self.ContactTime)})\n"
+              f"    -BPCD               = {self.BroadPhaseDetectionTime}({self.pct(self.BroadPhaseDetectionTime)})\n"
+              f"        --HashTableSetupTime      = {self.HashTableSetupTime}({self.pct(self.HashTableSetupTime)})\n"
+              f"        --PrefixSumTime           = {self.PrefixSumTime}({self.pct(self.PrefixSumTime)})\n"
+              f"        --CollisionPairSetupTime  = {self.CollisionPairSetupTime}({self.pct(self.CollisionPairSetupTime)})\n"
+              f"    -ContactResolveTime = {self.ContactResolveTime}({self.pct(self.ContactResolveTime)})\n"
+              )
+    
+        
+
 #=====================================
 # Environmental Variables
 #=====================================
@@ -104,9 +162,8 @@ ti.init(arch=ti.gpu)
 #=====================================
 # Utils
 #=====================================
-@ti.func
-def Zero3x3() -> Matrix3x3:
-    return Matrix3x3([[0,0,0],[0,0,0],[0,0,0]])
+def cal_neighbor_search_radius(max_radius):
+    return max_radius * set_particle_contact_radius_multiplier * (1.0 + set_bond_tensile_strength / set_bond_elastic_modulus) * set_neiboring_search_safety_factor
 
 def next_pow2(x:ti.i32):
     x -= 1
@@ -125,6 +182,10 @@ def round32(n:ti.i32):
 def round32d(n:ti.i32):
     if(n % 32 == 0): return n
     else: return ((n >> 5) + 1) << 5
+
+@ti.func
+def Zero3x3() -> Matrix3x3:
+    return Matrix3x3([[0,0,0],[0,0,0],[0,0,0]])
 
 # Add a math function: quaternion to rotation matrix
 # References:
@@ -229,14 +290,24 @@ class BPCD:
         offset : Integer
         count : Integer
         current : Integer
+    
+    # class Statistics:
+    #     def __init__(self):
+    #         self.MaxCountInACell = 0
+    #         self.ActiveCell = 0
+    #     def clear(self):
+    #         self.MaxCountInACell = 0
+    #         self.ActiveCell = 0
 
     def __init__(self, particle_count:Integer,hash_table_size:Integer, max_radius:Real, domain_min:Vector3):
         self.cell_size = max_radius * 4
         self.domain_min = domain_min
         self.hash_table = BPCD.HashCell.field(shape=hash_table_size)
         self.particle_id = ti.field(Integer, particle_count)
-        self.collision_count = ti.field(Integer, shape = ())
+        # self.collision_count = ti.field(Integer, shape = ())
         self.pse = PrefixSumExecutor()
+        self.statistics:DEMSolverStatistics = None
+        
     
     def create(particle_count:Integer, max_radius:Real, domain_min:Vector3, domain_max:Vector3):
         v = (domain_max - domain_min) / (4 * max_radius)
@@ -273,44 +344,51 @@ class BPCD:
         ht[i].count = 0
 
     def resolve_collision(self, 
-                          positions, 
-                          bounding_sphere_radius, 
+                          positions,
                           collision_resolve_callback):
         '''
         positions: field of Vector3
         bounding_sphere_radius: field of Real
         collision_resolve_callback: func(i:ti.i32, j:ti.i32) -> None
         '''
+        # if(self.statistics!=None):self.statistics.clear()
+        if(self.statistics!=None):self.statistics.HashTableSetupTime.tick()
         self._setup_collision(positions)
+        if(self.statistics!=None):self.statistics.HashTableSetupTime.tick()
+
+        if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
         self.pse.parallel(self.hash_table.offset, self.hash_table.count)
         # self.pse.serial(self.hash_table.offset, self.hash_table.count)
-        self._solve_collision(positions, bounding_sphere_radius, collision_resolve_callback)
+        if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
+        
+        if(self.statistics!=None):self.statistics.CollisionPairSetupTime.tick()
+        self._solve_collision(positions, collision_resolve_callback)
+        if(self.statistics!=None):self.statistics.CollisionPairSetupTime.tick()
 
     @ti.kernel
     def _setup_collision(self, positions:ti.template()):
         ht = ti.static(self.hash_table)
-        self.collision_count.fill(0)
+        # self.collision_count.fill(0)
         for i in ht: 
             self._clear_hash_cell(i)
         for i in positions: 
             self._count_particles(positions[i])
-        for i in ht: 
-            self._fill_hash_cell(i)
+        # for i in ht: 
+        #     self._fill_hash_cell(i)
     
     @ti.kernel
     def _solve_collision(self, 
                           positions:ti.template(),
-                          bounding_sphere_radius:ti.template(), 
                           collision_resolve_callback:ti.template()):
         ht = ti.static(self.hash_table)
-        radius = ti.static(bounding_sphere_radius)
+        # radius = ti.static(bounding_sphere_radius)
 
         for i in positions:
             self._put_particles(positions[i], i)
 
         for i in positions:
             o = positions[i]
-            r = radius[i]
+            # r = radius[i]
             ijk = self.cell(o)
             xyz = self.cell_center(ijk)
             Zero = Vector3i(0,0,0)
@@ -336,15 +414,16 @@ class BPCD:
                 hash_cell = ht[self.hash_code(cells[k])]
                 for idx in range(hash_cell.offset, hash_cell.offset + hash_cell.count):
                     pid = self.particle_id[idx]
-                    other_o = positions[pid]
-                    other_r = radius[pid]
-                    if(pid > i and tm.distance(o,other_o) <= r + other_r):
+                    # other_o = positions[pid]
+                    # other_r = radius[pid]
+                    if(pid > i 
+                       # and tm.distance(o,other_o) <= r + other_r
+                       ):
                         collision_resolve_callback(i, pid)
     
     @ti.kernel
     def brute_resolve_collision(self,
                                 positions:ti.template(), 
-                                bounding_sphere_radius:ti.template(), 
                                 collision_resolve_callback:ti.template()):
         '''
         positions: field of Vector3
@@ -352,13 +431,13 @@ class BPCD:
         collision_resolve_callback: func(i:ti.i32, j:ti.i32) -> None
         '''
         for i in range(positions.shape[0]):
-            o = positions[i]
-            r = bounding_sphere_radius[i]
+            # o = positions[i]
+            # r = bounding_sphere_radius[i]
             for j in range(i+1, positions.shape[0]):
-                other_o = positions[j]
-                other_r = bounding_sphere_radius[j]
-                if(tm.distance(o,other_o) <= r + other_r):
-                    collision_resolve_callback(i, j)
+                # other_o = positions[j]
+                # other_r = bounding_sphere_radius[j]
+                # if(tm.distance(o,other_o) <= r + other_r):
+                collision_resolve_callback(i, j)
         
     
     # https://stackoverflow.com/questions/1024754/how-to-compute-a-3d-morton-number-interleave-the-bits-of-3-ints
@@ -473,7 +552,9 @@ class Wall: # Size: 36B
 # Reference: Mindlin and Deresiewicz (1953) Elastic spheres in contact under varying oblique forces.
 # https://doi.org/10.1115/1.4010702
 @ti.dataclass
-class Contact: # Size: 136B
+class Contact: # Size: 144B
+    i:Integer
+    j:Integer
     # Contact status
     isActive : Integer # Contact exists: 1 - exist 0 - not exist
     isBonded : Integer # Contact is bonded: 1 - bonded, use EBPM 0 - unbonded, use Hertz-Mindlin
@@ -510,7 +591,7 @@ class IOContact: # Size: 64B
 
 @ti.data_oriented
 class DEMSolver:
-    def __init__(self, config:DEMSolverConfig):
+    def __init__(self, config:DEMSolverConfig, statistics:DEMSolverStatistics = None):
         self.config:DEMSolverConfig = config
         # Broad phase collisoin detection
         self.bpcd:BPCD
@@ -519,45 +600,16 @@ class DEMSolver:
         self.surf:ti.StructField # Surface types, n*n field: [0, 0] - particle-particle; [0, 1] == [1, 0] - particle-wall; [1, 1] - wall-wall (insensible)
         # Particle fields
         self.gf:ti.StructField
-        self.cf:ti.StructField
-        self.cfn:ti.SNode
+        
+        self.cf:ti.StructField # neighbors for every particle
+        self.cfn:ti.StructField # neighbor counter for every particle
         
         self.wf:ti.StructField
         self.wcf:ti.StructField
-        
-        self.collision_pairs:ti.StructField
-        self.collision_node:ti.SNode
-        
-        self.cp:ti.StructField
-        self.cn:ti.SNode
-        # grid fields
-        # self.list_head:ti.StructField
-        # self.list_cur:ti.StructField
-        # self.list_tail:ti.StructField
-        # self.grain_count:ti.StructField
-        # self.column_sum:ti.StructField
-        # self.prefix_sum:ti.StructField
-        # self.particle_id:ti.StructField
 
-
-    @ti.kernel
-    def fill_dense_cf(self, dense_cf:ti.template()):
-        k = 0
-        for i,j in self.cf:
-            if(self.cf[i,j].isActive):
-                p = ti.atomic_add(k, 1)
-                dense_cf[p].position = self.cf[i, j].position
-                dense_cf[p].force_a = self.cf[i, j].force_a
-                dense_cf[p].isBonded = self.cf[i,j].isBonded
-                dense_cf[p].isActive = self.cf[i,j].isActive
-                dense_cf[p].i = i
-                dense_cf[p].j = j
-    
-    @ti.kernel
-    def dense_cf_size(self)->Integer:
-        k = 0
-        for i,j in self.cf: ti.atomic_add(k, 1)
-        return k
+        self.cp:ti.StructField # collision pairs
+        self.cn:ti.SNode # collision pair node
+        self.statistics = statistics
 
 
     def save(self, file_name:str, time:float):
@@ -565,8 +617,8 @@ class DEMSolver:
         save the solved data at <time> to file .p4p and .p4c
         '''
         # P4P file for particles
-        p4p = open(file_name + ".p4p", encoding="UTF-8",mode='a')
-        p4c = open(file_name + ".p4c", encoding="UTF-8",mode='a')
+        p4p = open(file_name + ".p4p", encoding="UTF-8", mode = 'w')
+        p4c = open(file_name + ".p4c", encoding="UTF-8", mode = 'w')
         self.save_single(p4p, p4c, time)
         p4p.close()
         p4c.close()
@@ -576,6 +628,11 @@ class DEMSolver:
     def save_single(self, p4pfile, p4cfile, t:float):
         '''
         save the solved data at <time> to <p4pfile> and <p4cfile>
+        usage:
+            p4p = open('output.p4p',encoding="UTF-8",mode='w')
+            p4c = open('output.p4c',encoding="UTF-8",mode='w')
+            while(True):
+                solver.save_single(p4p, p4c, elapsed_time)
         '''
         tk1 = time.time()
         # P4P file for particles
@@ -611,43 +668,41 @@ class DEMSolver:
             p4pfile.write(line);
         
         # P4C file for contacts
-        ncontact = self.dense_cf_size()
-        fb = ti.FieldsBuilder()
-        dense_cf = IOContact.field()
-        fb.dense(ti.i, ncontact).place(dense_cf)
-        snode_tree = fb.finalize()  # Finalizes the FieldsBuilder and returns a SNodeTree
-        self.fill_dense_cf(dense_cf)
-        
-        np_i = dense_cf.i.to_numpy()
-        np_j = dense_cf.j.to_numpy()
-        np_position = dense_cf.position.to_numpy()
-        np_force_a = dense_cf.force_a.to_numpy()
-        np_bonded = dense_cf.isBonded.to_numpy()
-        # np_active = dense_cf.isActive.to_numpy()
-        ncontact = dense_cf.shape[0]
-        snode_tree.destroy()
-        
-        ccache: list = ["TIMESTEP  CONTACTS\n",
-                        f"{t} {ncontact}\n",
-                        "P1  P2  CX  CY  CZ  FX  FY  FZ  CONTACT_IS_BONDED\n"];
-        
-        for k in range(dense_cf.shape[0]):
-            # GROUP omitted
-            p1 : int = np_ID[np_i[k]];
-            p2 : int = np_ID[np_j[k]];
-            cx : float = np_position[k][0];
-            cy : float = np_position[k][1];
-            cz : float = np_position[k][2];
-            fx : float = np_force_a[k][0];
-            fy : float = np_force_a[k][1];
-            fz : float = np_force_a[k][2];
-            bonded : int = np_bonded[k];
-            ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
 
+        np_i = self.cf.i.to_numpy()
+        np_j = self.cf.j.to_numpy()
+        np_position = self.cf.position.to_numpy()
+        np_force_a = self.cf.force_a.to_numpy()
+        np_bonded = self.cf.isBonded.to_numpy()
+        np_active = self.cf.isActive.to_numpy()
+        ncontact = 0
+        
+        ccache: list = [];
+        
+        for k in range(self.cf.shape[0]):
+            # GROUP omitted
+            if(np_active[k]):
+                p1 : int = np_ID[np_i[k]];
+                p2 : int = np_ID[np_j[k]];
+                cx : float = np_position[k][0];
+                cy : float = np_position[k][1];
+                cz : float = np_position[k][2];
+                fx : float = np_force_a[k][0];
+                fy : float = np_force_a[k][1];
+                fz : float = np_force_a[k][2];
+                bonded : int = np_bonded[k];
+                ncontact+=1
+                ccache.append(f'{p1} {p2} {cx} {cy} {cz} {fx} {fy} {fz} {bonded}\n')
+        head: list = ["TIMESTEP  CONTACTS\n",
+                        f"{t} {ncontact}\n",
+                        "P1  P2  CX  CY  CZ  FX  FY  FZ  CONTACT_IS_BONDED\n"]
+        for line in head:
+            p4cfile.write(line)
         for line in ccache: # Include the title line
             p4cfile.write(line);
         tk2 = time.time()
         print(f"save time cost = {tk2 - tk1}")
+
 
     def init_particle_fields(self, file_name:str, domain_min:Vector3, domain_max:Vector3):
         fp = open(file_name, encoding="UTF-8")
@@ -767,20 +822,62 @@ class DEMSolver:
         self.surf[1, 0] = self.surf[0, 1];
 
         # surf[1, 1] is insensible
-
-        self.bpcd = BPCD.create(n, max_radius * 1.1, domain_min, domain_max)
+        r = cal_neighbor_search_radius(max_radius)
+        self.bpcd = BPCD.create(n, r, domain_min, domain_max)
+        self.bpcd.statistics = self.statistics
         
         u1 = ti.types.quant.int(1, False)
         self.cp = ti.field(u1)
         self.cn = ti.root.dense(ti.i, round32(n * n)//32).quant_array(ti.i, dimensions=32, max_num_bits=32).place(self.cp)
         
-        self.cf = Contact.field()
-        self.cfn = ti.root.pointer(ti.ij, (n,n)).place(self.cf)
+        # self.cf = Contact.field()
+        # self.cfn = ti.root.pointer(ti.ij, (n,n)).place(self.cf)
+        
+        self.cf = Contact.field(shape=set_max_coordinate_number * n)
+        self.cfn = ti.field(Integer, shape = n)
         
         # self.collision_pairs = ti.field(ti.i8)
         # self.collision_node = ti.root.pointer(ti.ij,(n,n))
         # self.collision_node.place(self.collision_pairs)
 
+
+    @ti.func
+    def append_contact_offset(self, i):
+        ret = -1
+        offset = ti.atomic_add(self.cfn[i], 1)
+        # print(f'i={i}, offset={offset}')
+        if(offset < set_max_coordinate_number):
+            ret =  i * set_max_coordinate_number + offset
+        return ret
+
+
+    @ti.func
+    def search_active_contact_offset(self, i, j):
+        ret = -1
+        for offset in range(self.cfn[i]):
+            if (self.cf[i * set_max_coordinate_number + offset].j == j 
+                and self.cf[i * set_max_coordinate_number + offset].isActive):
+                    ret = i * set_max_coordinate_number + offset
+                    break
+        return ret
+
+    @ti.func 
+    def remove_inactive_contact(self, i):
+        active_count = 0
+        for j in range(self.cfn[i]):
+            if(self.cf[i * set_max_coordinate_number + j].isActive): active_count+=1
+        offset = 0
+        for j in range(self.cfn[i]):
+            if(self.cf[i * set_max_coordinate_number + j].isActive):
+                if(offset > j):
+                    self.cf[i * set_max_coordinate_number + offset] = self.cf[i * set_max_coordinate_number + j]
+                offset += 1
+                if(offset >= active_count): break
+        for j in range(active_count, self.cfn[i]):
+            self.cf[i * set_max_coordinate_number + j].isActive = False
+        self.cfn[i] = active_count
+        
+            
 
     @ti.func
     def set_collision_bit(self, i:ti.i32, j:ti.i32):
@@ -804,7 +901,14 @@ class DEMSolver:
         for i in gf:
             gf[i].force = Vector3(0.0, 0.0, 0.0)
             gf[i].moment = Vector3(0.0, 0.0, 0.0)
+           
 
+    @ti.kernel
+    def late_clear_state(self):
+        gf = ti.static(self.gf)
+        # remove inactive contact and do compress
+        for i in gf:
+            self.remove_inactive_contact(i)
 
     @ti.kernel
     def apply_body_force(self):
@@ -911,18 +1015,23 @@ class DEMSolver:
         
         eval = False
         # Particle-particle contacts
-        if (ti.is_active(self.cfn, [i,j]) and self.cf[i,j].isActive): # Existing contact
-            if (cf[i, j].isBonded): # Bonded contact
+        offset = self.search_active_contact_offset(i, j)
+        
+        if (offset >= 0): # Existing contact
+            if (cf[offset].isBonded): # Bonded contact
                 eval = True # Bonded contact must exist. Go to evaluation and if bond fails, the contact state will change thereby.
             else: # Non-bonded contact, should check whether two particles are still in contact
                 if (- gf[i].radius - gf[j].radius + tm.length(gf[j].position - gf[i].position) < 0): # Use PFC's gap < 0 criterion
                     eval = True
                 else:
-                    self.cf[i,j].isActive = 0
-                    ti.deactivate(self.cfn, [i,j])
+                    cf[offset].isActive = 0
         else:
             if (- gf[i].radius - gf[j].radius + tm.length(gf[j].position - gf[i].position) < 0): # Use PFC's gap < 0 criterion
-                cf[i, j] = Contact( # Hertz-Mindlin model
+                offset = self.append_contact_offset(i)
+                if(offset < 0): print(f"ERROR: coordinate number > set_max_coordinate_number({set_max_coordinate_number})")
+                cf[offset] = Contact( # Hertz-Mindlin model
+                    i = i,
+                    j = j,
                     isActive = 1,
                     isBonded = 0,
                     materialType_i = 0,
@@ -956,8 +1065,8 @@ class DEMSolver:
                 
             length = tm.length(gf[j].position - gf[i].position)
             # Contact evaluation (with contact model)
-            if (cf[i, j].isBonded): # Bonded, use EBPM
-                cf[i, j].position = 0.5 * (gf[i].position + gf[j].position);
+            if (cf[offset].isBonded): # Bonded, use EBPM
+                cf[offset].position = 0.5 * (gf[i].position + gf[j].position);
                 disp_a = rotationMatrix @ gf[i].velocity * dt
                 disp_b = rotationMatrix @ gf[j].velocity * dt
                 rot_a = rotationMatrix @ gf[i].omega * dt
@@ -1001,47 +1110,44 @@ class DEMSolver:
                     [   0,  k3,   0,   0,   0,  k6,   0, -k3,   0,   0,   0,  k5]
                 ])
                 forceVector = K @ dispVector
-                cf[i, j].force_a += Vector3(forceVector[0], forceVector[1], forceVector[2])
-                cf[i, j].moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5])
-                force_b = - cf[i, j].force_a;
-                # cf[i, j].force_b += Vector3(forceVector[6], forceVector[7], forceVector[8])
-                cf[i, j].moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11])
+                cf[offset].force_a += Vector3(forceVector[0], forceVector[1], forceVector[2])
+                cf[offset].moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5])
+                force_b = - cf[offset].force_a;
+                # cf[offset].force_b += Vector3(forceVector[6], forceVector[7], forceVector[8])
+                cf[offset].moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11])
                 
                 # For debug only
                 # Check equilibrium
-                # if (tm.length(cf[i, j].force_a + cf[i, j].force_b) > DoublePrecisionTolerance):
+                # if (tm.length(cf[offset].force_a + cf[offset].force_b) > DoublePrecisionTolerance):
                 #     print("Equilibrium error.")
 
                 # Check whether the bond fails
-                sigma_c_a = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[i, j].moment_a[1] ** 2 + cf[i, j].moment_a[2] ** 2)
-                sigma_c_b = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[i, j].moment_b[1] ** 2 + cf[i, j].moment_b[2] ** 2)
+                sigma_c_a = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[offset].moment_a[1] ** 2 + cf[offset].moment_a[2] ** 2)
+                sigma_c_b = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[offset].moment_b[1] ** 2 + cf[offset].moment_b[2] ** 2)
                 sigma_c_max = -tm.min(sigma_c_a, sigma_c_b)
                 sigma_t_a = sigma_c_a
                 sigma_t_b = sigma_c_b
                 sigma_t_max = tm.max(sigma_t_a, sigma_t_b)
-                tau_max = ti.abs(cf[i, j].moment_a[0]) * r_b / 2.0 / I_b + 4.0 / 3.0 / A_b * tm.sqrt(cf[i, j].force_a[1] ** 2 + cf[i, j].force_a[2] ** 2)
+                tau_max = ti.abs(cf[offset].moment_a[0]) * r_b / 2.0 / I_b + 4.0 / 3.0 / A_b * tm.sqrt(cf[offset].force_a[1] ** 2 + cf[offset].force_a[2] ** 2)
                 if (sigma_c_max >= surf[type_i, type_j].compressiveStrength): # Compressive failure
-                    cf[i, j].isBonded = 0
-                    cf[i, j].isActive = 0
-                    ti.deactivate(self.cfn, [i,j])
+                    cf[offset].isBonded = 0
+                    cf[offset].isActive = 0
                     # print(f"Bond compressive failure at: {i}, {j}");
                 elif (sigma_t_max >= surf[type_i, type_j].tensileStrength): # Tensile failure
-                    cf[i, j].isBonded = 0
-                    cf[i, j].isActive = 0
-                    ti.deactivate(self.cfn, [i,j])
+                    cf[offset].isBonded = 0
+                    cf[offset].isActive = 0
                     # print(f"Bond tensile failure at: {i}, {j}\n");
                 elif (tau_max >= surf[type_i, type_j].shearStrength): # Shear failure
-                    cf[i, j].isBonded = 0
-                    cf[i, j].isActive = 0
-                    ti.deactivate(self.cfn, [i,j])
+                    cf[offset].isBonded = 0
+                    cf[offset].isActive = 0
                     # print(f"Bond shear failure at: {i}, {j}\n");
                 else: # Intact bond, need to conduct force to particles
                     # Notice the inverse of signs due to Newton's third law
                     # and LOCAL to GLOBAL coordinates
-                    ti.atomic_add(gf[i].force, ti.Matrix.inverse(rotationMatrix) @ (-cf[i, j].force_a))
+                    ti.atomic_add(gf[i].force, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].force_a))
                     ti.atomic_add(gf[j].force, ti.Matrix.inverse(rotationMatrix) @ (-force_b))
-                    ti.atomic_add(gf[i].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[i, j].moment_a))
-                    ti.atomic_add(gf[j].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[i, j].moment_b))
+                    ti.atomic_add(gf[i].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].moment_a))
+                    ti.atomic_add(gf[j].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].moment_b))
             else: # Non-bonded, use Hertz-Mindlin
                 # Calculation relative translational and rotational displacements
                 # Need to include the impact of particle rotation in contact relative translational displacement
@@ -1057,9 +1163,9 @@ class DEMSolver:
                 # if (delta_n > 0.05 * ti.min(gf[i].radius, gf[j].radius)):
                 #     print("WARNING: Overlap particle-particle exceeds 0.05");
                 
-                cf[i, j].position = gf[i].position + tm.normalize(gf[j].position - gf[i].position) * (gf[i].radius - delta_n)
-                r_i = cf[i, j].position - gf[i].position
-                r_j = cf[i, j].position - gf[j].position
+                cf[offset].position = gf[i].position + tm.normalize(gf[j].position - gf[i].position) * (gf[i].radius - delta_n)
+                r_i = cf[offset].position - gf[i].position
+                r_j = cf[offset].position - gf[j].position
                 # Velocity of a point on the surface of a rigid body
                 v_c_i = tm.cross(gf[i].omega, r_i) + gf[i].velocity
                 v_c_j = tm.cross(gf[j].omega, r_j) + gf[j].velocity
@@ -1083,7 +1189,7 @@ class DEMSolver:
                 # Shear displacement increments
                 shear_increment = v_c * dt
                 shear_increment[0] = 0.0 # Remove the normal direction
-                cf[i, j].shear_displacement += shear_increment
+                cf[offset].shear_displacement += shear_increment
                 # Normal direction - LOCAL - the force towards particle j
                 F = Vector3(0.0, 0.0, 0.0)
                 # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
@@ -1092,13 +1198,13 @@ class DEMSolver:
                 # Be aware of signs
                 F[0] = - k_n * gap - gamma_n * v_c[0]
                 # Shear direction - LOCAL - the force towards particle j
-                try_shear_force = - k_t * cf[i, j].shear_displacement
+                try_shear_force = - k_t * cf[offset].shear_displacement
                 if (tm.length(try_shear_force) >= surf[type_i, type_j].coefficientFriction * F[0]): # Sliding
                     ratio : Real = surf[type_i, type_j].coefficientFriction * F[0] / tm.length(try_shear_force)
                     F[1] = try_shear_force[1] * ratio
                     F[2] = try_shear_force[2] * ratio
-                    cf[i, j].shear_displacement[1] = F[1] / k_t
-                    cf[i, j].shear_displacement[2] = F[2] / k_t
+                    cf[offset].shear_displacement[1] = F[1] / k_t
+                    cf[offset].shear_displacement[2] = F[2] / k_t
                 else: # No sliding
                     F[1] = try_shear_force[1] - gamma_t * v_c[1]
                     F[2] = try_shear_force[2] - gamma_t * v_c[2]
@@ -1106,8 +1212,8 @@ class DEMSolver:
                 # No moment is conducted in Hertz-Mindlin model
                 
                 # For P4C output
-                cf[i, j].force_a = F;
-                # cf[i, j].force_b = -F;
+                cf[offset].force_a = F;
+                # cf[offset].force_b = -F;
                 # Assigning contact force to particles
                 # Notice the inverse of signs due to Newton's third law
                 # and LOCAL to GLOBAL coordinates
@@ -1281,7 +1387,11 @@ class DEMSolver:
         contact_radius_i = gf[i].contactRadius;
         contact_radius_j = gf[j].contactRadius;
         if (tm.length(gf[j].position - gf[i].position) - contact_radius_i - contact_radius_j < 0.0):
-            cf[i, j] = Contact( # Forced to bond contact
+            offset = self.append_contact_offset(i)
+            if(offset >= 0):
+                cf[offset] = Contact( # Forced to bond contact
+                i = i,
+                j = j,
                 isActive = 1,
                 isBonded = 1,
                 materialType_i = 0,
@@ -1290,7 +1400,11 @@ class DEMSolver:
                 moment_a = Vector3(0.0, 0.0, 0.0),
                 # force_b = Vector3(0.0, 0.0, 0.0),
                 moment_b = Vector3(0.0, 0.0, 0.0),
-            )
+                )
+            else:
+                print(f"ERROR: coordinate number > set_max_coordinate_number({set_max_coordinate_number})")
+            if(i == 867 and j == 869):
+                print(f"len = {tm.length(gf[j].position - gf[i].position)}")
 
 
     def bond(self):
@@ -1298,34 +1412,61 @@ class DEMSolver:
         Similar to contact, but runs only once at the beginning
         '''
         # In example 911, brute detection has better efficiency
-        self.bpcd.resolve_collision(self.gf.position, self.gf.contactRadius, self.bond_detect)
-        # self.bpcd.brute_resolve_collision(self.gf.position, self.gf.contactRadius, self.bond_detect)
+        self.bpcd.resolve_collision(self.gf.position, self.bond_detect)
+        # self.bpcd.brute_resolve_collision(self.gf.position, self.bond_detect)
 
+    @ti.kernel
+    def clear_cp(self):
+        ti.loop_config(bit_vectorize=True)
+        for i in ti.grouped(self.cp):
+            self.cp[i] = 0
 
     # Neighboring search
     def contact(self):
         '''
         Handle the collision between grains.
         '''
-        # self.collision_node.deactivate_all()
-        self.cp.fill(0)
         # In example 911, brute detection has better efficiency
-        self.bpcd.resolve_collision(self.gf.position, self.gf.contactRadius, self.on_collision)
-        # self.bpcd.brute_resolve_collision(self.gf.position, self.gf.contactRadius, self.on_collision)
+        # self.collision_node.deactivate_all()
+        if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
+        # self.cp.fill(0)
+        self.clear_cp()
+        self.bpcd.resolve_collision(self.gf.position, self.on_collision)
+        # self.bpcd.brute_resolve_collision(self.gf.position, self.on_collision)
+        if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
+        
+        if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
         self.resolve_collision()
+        if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
 
 
     def run_simulation(self):
+        if(self.statistics!=None):self.statistics.SolveTime.tick()
         self.clear_state()
         # Particle-particle 
         # Neighboring search + Contact detection, resolution and evaluation
+        if(self.statistics!=None):self.statistics.ContactTime.tick()
         self.contact()
+        if(self.statistics!=None):self.statistics.ContactTime.tick()
+        
         # Particle-wall
+        if(self.statistics!=None):self.statistics.ResolveWallTime.tick()
         self.resolve_wall()
+        if(self.statistics!=None):self.statistics.ResolveWallTime.tick()
+        
         # Particle body force
+        if(self.statistics!=None):self.statistics.ApplyForceTime.tick()
         self.apply_body_force() 
+        if(self.statistics!=None):self.statistics.ApplyForceTime.tick()
+        
         # Time integration
+        if(self.statistics!=None):self.statistics.UpdateTime.tick()
         self.update()
+        if(self.statistics!=None):self.statistics.UpdateTime.tick()
+        
+        # clear certain states at the end
+        self.late_clear_state()
+        if(self.statistics!=None):self.statistics.SolveTime.tick()
 
 
     def init_simulation(self):
@@ -1343,11 +1484,15 @@ window_size = 1024  # Number of pixels of the window
 #=======================================================================
 if __name__ == '__main__':
     config = DEMSolverConfig()
-    solver = DEMSolver(config)
+    statistics = None
+    # statistics = DEMSolverStatistics()
+    solver = DEMSolver(config, statistics)
     domain_min = set_domain_min
     domain_max = set_domain_max
     solver.init_particle_fields(set_init_particles,domain_min,domain_max)
-    print(f"hash table size = {solver.bpcd.hash_table.shape[0]}")
+    print(f"hash table size = {solver.bpcd.hash_table.shape[0]}, cell_size = {solver.bpcd.cell_size}")
+    
+    tstart = time.time()
     
     step = 0
     elapsed_time = 0.0
@@ -1370,16 +1515,23 @@ if __name__ == '__main__':
                 gui.show()
     else: # offline
         solver.save('output', 0)
-        #p4p = open('output',encoding="UTF-8",mode='w')
-        #p4c = open('output',encoding="UTF-8",mode='w')
+        # p4p = open('output',encoding="UTF-8",mode='w')
+        # p4c = open('output',encoding="UTF-8",mode='w')
         #solver.save_single(p4p,p4c,solver.config.dt * step)
         while step < config.nsteps:
+            t1 = time.time()
             for _ in range(config.saving_interval_steps): 
                 step += 1
                 elapsed_time += config.dt
                 solver.run_simulation()
+            t2 = time.time()
             #solver.save_single(p4p,p4c,solver.config.dt * step)
-            solver.save('output', elapsed_time)
-            print(f"solved steps: {step}")
+            print('>>>')
+            print(f"solved steps: {step} last-{config.saving_interval_steps}-sim: {t2-t1}s")
+            solver.save(f'output_data/{step:07d}', elapsed_time)
+            if(solver.statistics): solver.statistics.report()
+            print('<<<')
         #p4p.close()
         #p4c.close()
+    tend = time.time()
+    print(f"total solve time = {tend - tstart}")
