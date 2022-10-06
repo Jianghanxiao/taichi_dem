@@ -1,8 +1,8 @@
 # Complex DEM simulation using Taichi DEM
 # 
 # Authors:
-# Denver Pilphis (Complex DEM mechanism implementation)
-# MuGdxy (GPU HPC optimization)
+# Denver Pilphis (Complex DEM theory and implementation)
+# MuGdxy (Performance optimization)
 # 
 # Introducion
 # This example performs a bonded agglomerate with cubed shape hitting on a flat surface.
@@ -32,7 +32,7 @@ import time
 #=====================================
 Real = ti.f64
 Integer = ti.i32
-Byte = ti.i8
+# Byte = ti.i8
 Vector2 = ti.types.vector(2, Real)
 Vector3 = ti.types.vector(3, Real)
 Vector4 = ti.types.vector(4, Real)
@@ -41,8 +41,9 @@ Vector2i = ti.types.vector(2, Integer)
 Matrix3x3 = ti.types.matrix(3, 3, Real)
 
 DEMMatrix = Matrix3x3
-EBPMStiffnessMatrix = ti.types.matrix(12, 12, Real)
-EBPMForceDisplacementVector = ti.types.vector(12, Real)
+# Deprecated
+# EBPMStiffnessMatrix = ti.types.matrix(12, 12, Real)
+# EBPMForceDisplacementVector = ti.types.vector(12, Real)
 
 #=====================================
 # DEM Simulation Configuration
@@ -50,7 +51,7 @@ EBPMForceDisplacementVector = ti.types.vector(12, Real)
 set_domain_min: Vector3 = Vector3(-5,-5,-5)
 set_domain_max: Vector3 = Vector3(0.1,5,5)
 
-set_init_particles: str = "Resources/cube_911_particles_impact.p4p"
+set_init_particles: str = "Resources/cube_18112_particles_impact.p4p"
 
 set_particle_contact_radius_multiplier: Real = 1.1;
 set_neiboring_search_safety_factor: Real = 1.2;
@@ -58,7 +59,7 @@ set_particle_elastic_modulus: Real = 7e10;
 set_particle_poisson_ratio: Real = 0.25;
 
 set_wall_normal: Vector3 = Vector3(1.0, 0.0, 0.0);
-set_wall_distance: Real = 0.02;
+set_wall_distance: Real = 0.1;
 set_wall_density: Real = 7800.0;
 set_wall_elastic_modulus: Real = 2e11;
 set_wall_poisson_ratio: Real = 0.25;
@@ -563,17 +564,14 @@ class Contact: # Size: 144B
     materialType_j: Integer
     # rotationMatrix : DEMMatrix # Rotation matrix from global to local system of the contact
     position : Vector3 # Position of contact point in GLOBAL coordinate
-
     # radius : Real # Section radius: r = rratio * min(r1, r2), temporarily calculated in evaluation
     # length : Real # Length of the bond
-
     # EBPM parts
     force_a : Vector3 # Contact force at side a in LOCAL coordinate
     moment_a : Vector3 # Contact moment/torque at side a in LOCAL coordinate
     # force_b = - force_a due to equilibrium
     # force_b : Vector3 # Contact force at side b in LOCAL coordinate
     moment_b : Vector3 # Contact moment/torque at side b in LOCAL coordinate
-    
     # Hertz-Mindlin parts
     shear_displacement: Vector3 # Shear displacement stored in the contact
 
@@ -1071,7 +1069,8 @@ class DEMSolver:
                 disp_b = rotationMatrix @ gf[j].velocity * dt
                 rot_a = rotationMatrix @ gf[i].omega * dt
                 rot_b = rotationMatrix @ gf[j].omega * dt
-                dispVector = EBPMForceDisplacementVector([disp_a, rot_a, disp_b, rot_b])
+                # Deprecated
+                # dispVector = EBPMForceDisplacementVector([disp_a, rot_a, disp_b, rot_b])
                 type_i: Integer = gf[i].materialType;
                 type_j: Integer = gf[j].materialType;
                 r_b = surf[type_i, type_j].radius_ratio * tm.min(gf[i].radius, gf[j].radius)
@@ -1087,34 +1086,56 @@ class DEMSolver:
                 k4 = E_b * I_b / L_b / (1.0 + nu)
                 k5 = E_b * I_b * (4.0 + phi) / L_b / (1.0 + phi)
                 k6 = E_b * I_b * (2.0 - phi) / L_b / (1.0 + phi)
-                K = EBPMStiffnessMatrix([
-                    [  k1,   0,   0,   0,   0,   0, -k1,   0,   0,   0,   0,   0],
-                    [   0,  k2,   0,   0,   0,  k3,   0, -k2,   0,   0,   0,  k3],
-                    [   0,   0,  k2,   0, -k3,   0,   0,   0, -k2,   0, -k3,   0],
-                    [   0,   0,   0,  k4,   0,   0,   0,   0,   0, -k4,   0,   0],
-                    [   0,   0, -k3,   0,   k5,  0,   0,   0,  k3,   0,  k6,   0],
-                    [   0,   k3,  0,   0,   0,  k5,   0, -k3,   0,   0,   0,  k6],
-                    [ -k1,   0,   0,   0,   0,   0,  k1,   0,   0,   0,   0,   0],
-                    # K[7, 5] is WRONG in original EBPM document
-                    # ΔFay + ΔFby is nonzero
-                    # which does not satisfy the equilibrium
-                    # Acknowledgement to Dr. Xizhong Chen in 
-                    # Department of Chemical and Biological Engineering,
-                    # The University of Sheffield
-                    # Reference: Chen et al. (2022) A comparative assessment and unification of bond models in DEM simulations.
-                    # https://doi.org/10.1007/s10035-021-01187-2
-                    [   0, -k2,   0,   0,   0, -k3,   0,  k2,   0,   0,   0, -k3],
-                    [   0,   0, -k2,   0,  k3,   0,   0,   0,  k2,   0,  k3,   0],
-                    [   0,   0,   0, -k4,   0,   0,   0,   0,   0,  k4,   0,   0],
-                    [   0,   0, -k3,   0,  k6,   0,   0,   0,  k3,   0,  k5,   0],
-                    [   0,  k3,   0,   0,   0,  k6,   0, -k3,   0,   0,   0,  k5]
-                ])
-                forceVector = K @ dispVector
-                cf[offset].force_a += Vector3(forceVector[0], forceVector[1], forceVector[2])
-                cf[offset].moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5])
-                force_b = - cf[offset].force_a;
+                inc_force_a = Vector3(
+                    k1 * (disp_a[0] - disp_b[0]),
+                    k2 * (disp_a[1] - disp_b[1]) + k3 * (rot_a[2] + rot_b[2]),
+                    k2 * (disp_a[2] - disp_b[2]) - k3 * (rot_a[1] + rot_b[1])
+                )
+                inc_moment_a = Vector3(
+                    k4 * (rot_a[0] - rot_b[0]),
+                    k3 * (disp_b[2] - disp_a[2]) + k5 * rot_a[1] + k6 * rot_b[1],
+                    k3 * (disp_a[1] - disp_b[1]) + k5 * rot_a[2] + k6 * rot_b[2]
+                )
+                # No need to calculate inc_force_b as inc_force_b == - inc_force_a and force_b == force_a
+                inc_moment_b = Vector3(
+                    k4 * (rot_b[0] - rot_a[0]),
+                    k3 * (disp_b[2] - disp_a[2]) + k6 * rot_a[1] + k5 * rot_b[1],
+                    k3 * (disp_a[1] - disp_b[1]) + k6 * rot_a[2] + k5 * rot_b[2]
+                )
+                # Deprecated
+                # K = EBPMStiffnessMatrix([
+                #        disp_a         rot_a          disp_b         rot_b
+                #        0    1    2    0    1    2    0    1    2    0    1    2
+                #    [  k1,   0,   0,   0,   0,   0, -k1,   0,   0,   0,   0,   0], 0 inc_force_a
+                #    [   0,  k2,   0,   0,   0,  k3,   0, -k2,   0,   0,   0,  k3], 1
+                #    [   0,   0,  k2,   0, -k3,   0,   0,   0, -k2,   0, -k3,   0], 2
+                #    [   0,   0,   0,  k4,   0,   0,   0,   0,   0, -k4,   0,   0], 0 inc_moment_a
+                #    [   0,   0, -k3,   0,   k5,  0,   0,   0,  k3,   0,  k6,   0], 1
+                #    [   0,   k3,  0,   0,   0,  k5,   0, -k3,   0,   0,   0,  k6], 2
+                #    [ -k1,   0,   0,   0,   0,   0,  k1,   0,   0,   0,   0,   0], 0 inc_force_b
+                #    # K[7, 5] is WRONG in original EBPM document
+                #    # ΔFay + ΔFby is nonzero
+                #    # which does not satisfy the equilibrium
+                #    # Acknowledgement to Dr. Xizhong Chen in 
+                #    # Department of Chemical and Biological Engineering,
+                #    # The University of Sheffield
+                #    # Reference: Chen et al. (2022) A comparative assessment and unification of bond models in DEM simulations.
+                #    # https://doi.org/10.1007/s10035-021-01187-2
+                #    [   0, -k2,   0,   0,   0, -k3,   0,  k2,   0,   0,   0, -k3], 1
+                #    [   0,   0, -k2,   0,  k3,   0,   0,   0,  k2,   0,  k3,   0], 2
+                #    [   0,   0,   0, -k4,   0,   0,   0,   0,   0,  k4,   0,   0], 0 inc_moment_b
+                #    [   0,   0, -k3,   0,  k6,   0,   0,   0,  k3,   0,  k5,   0], 1
+                #    [   0,  k3,   0,   0,   0,  k6,   0, -k3,   0,   0,   0,  k5]  2
+                #])
+                # forceVector = K @ dispVector
+                cf[offset].force_a += inc_force_a
+                # cf[offset].force_a += Vector3(forceVector[0], forceVector[1], forceVector[2])
+                cf[offset].moment_a += inc_moment_a
+                # cf[offset].moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5])
+                force_b = - cf[offset].force_a
                 # cf[offset].force_b += Vector3(forceVector[6], forceVector[7], forceVector[8])
-                cf[offset].moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11])
+                cf[offset].moment_b += inc_moment_b
+                # cf[offset].moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11])
                 
                 # For debug only
                 # Check equilibrium
@@ -1484,6 +1505,7 @@ window_size = 1024  # Number of pixels of the window
 #=======================================================================
 if __name__ == '__main__':
     config = DEMSolverConfig()
+    # Disable simulation benchmark
     statistics = None
     # statistics = DEMSolverStatistics()
     solver = DEMSolver(config, statistics)
@@ -1514,10 +1536,10 @@ if __name__ == '__main__':
             else:
                 gui.show()
     else: # offline
-        solver.save('output', 0)
-        # p4p = open('output',encoding="UTF-8",mode='w')
-        # p4c = open('output',encoding="UTF-8",mode='w')
-        #solver.save_single(p4p,p4c,solver.config.dt * step)
+        # solver.save('output', 0)
+        p4p = open('output.p4p',encoding="UTF-8",mode='w')
+        p4c = open('output.p4c',encoding="UTF-8",mode='w')
+        solver.save_single(p4p,p4c,solver.config.dt * step)
         while step < config.nsteps:
             t1 = time.time()
             for _ in range(config.saving_interval_steps): 
@@ -1528,10 +1550,11 @@ if __name__ == '__main__':
             #solver.save_single(p4p,p4c,solver.config.dt * step)
             print('>>>')
             print(f"solved steps: {step} last-{config.saving_interval_steps}-sim: {t2-t1}s")
-            solver.save(f'output_data/{step:07d}', elapsed_time)
+            solver.save_single(p4p, p4c, solver.config.dt * step)
+            #solver.save(f'output_data/{step:07d}', elapsed_time)
             if(solver.statistics): solver.statistics.report()
             print('<<<')
-        #p4p.close()
-        #p4c.close()
+        p4p.close()
+        p4c.close()
     tend = time.time()
     print(f"total solve time = {tend - tstart}")
