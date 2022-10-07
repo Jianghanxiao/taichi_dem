@@ -44,7 +44,7 @@ energy. This could be a good example of validating Hertz-Mindlin model.
 
 ![](Demos/carom/carom.gif)
 
-### Cube with 911 particles impact on a flat surface
+### Cubic bonded agglomerate with 911 particles impact on a flat surface
 This demo performs a bonded agglomerate with cubed shape hitting on a flat surface.
 The bonds within the agglomerate will fail while the agglomerate is hitting the surface.
 Then the agglomerate will break into fragments, flying to the surrounding space.
@@ -52,7 +52,7 @@ This could be a good example of validating EBPM.
 
 ![](Demos/cube_911_particles_impact/cube_911_particles_impact.gif)
 
-### Cube with 18112 particles impact on a flat surface
+### Cubic bonded agglomerate with 18112 particles impact on a flat surface
 This demo is similar to the one above, with the only difference of particle number.
 This could be a good example of benchmark on large system simulation.
 
