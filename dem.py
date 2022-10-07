@@ -1,24 +1,72 @@
-# Complex DEM simulation using Taichi DEM
+# Engineering quantitative DEM simulation using Taichi DEM
 # 
 # Authors:
-# Denver Pilphis (Complex DEM theory and implementation)
-# MuGdxy (Performance optimization)
+# Denver Pilphis (Di Peng) - DEM theory and implementation
+# MuGdxy (Xinyu Lu) - Performance optimization
 # 
 # Introducion
-# This example performs a bonded agglomerate with cubed shape hitting on a flat surface.
-# The bonds within the agglomerate will fail while the agglomerate is hitting the surface.
-# Then the agglomerate will break into fragments, flying to the surrounding space.
+# This instance provides a complete implementation of discrete element method (DEM) for simulation.
+# Complex DEM mechanics are considered and the result is engineering quantitative.
+# The efficiency of computation is guaranteed by Taichi, along with proper arrangements of data and algorithms.
 #
 # Features
-# Compared with initial version, this example has added the following features:
+# Compared with initial version, this instance has added the following features:
 # 1. 2D DEM to 3D DEM;
 # 2. Particle orientation and rotation are fully considered and implemented, in which the possibility
 #    for modeling nonspherical particles is reserved;
 # 3. Wall (geometry in DEM) element is implemented, particle-wall contact is solved;
-# 4. Complex DEM contact model is implemented, including a bond model (Edinburgh Bond Particle Model, EBPM)
-#    and a granular contact model (Hertz-Mindlin Model);
+# 4. Complex DEM contact model is implemented, including a bond model (Edinburgh Bonded Particle Model, EBPM)
+#    and a granular contact model (Hertz-Mindlin Contact Model);
 # 5. As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates;
 # 6. As a bond model is implemented, particle breakage can be simulated.
+#
+# Demos
+# 1. Carom billiards
+# This demo performs the first stage of carom billiards. The white ball goes towards other balls and collision
+# occurs soon. Then the balls scatter. Although there is energy loss, all the balls will never stop as they
+# enter the state of pure rotation and no rolling resistance is available to dissipate the rotational kinematic
+# energy. This could be a good example of validating Hertz-Mindlin model.
+# Parameters to set:
+# set_domain_min = Vector3(-5.0, -5.0, -1.0)
+# set_domain_max = Vector3(5.0, 5.0, 1.0)
+# set_init_particles = "Resources/carom.p4p"
+# set_wall_normal = Vector3(0.0, 0.0, -1.0)
+# set_wall_distance = 0.03125
+# DEMSolverConfig.dt = 2.56e-6
+# DEMSolverConfig.target_time = 1.28
+# DEMSolverConfig.saving_interval_time = 2.56e-3
+# DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
+# 
+# 2. Cube with 911 particles impact on a flat surface
+# This demo performs a bonded agglomerate with cubed shape hitting on a flat surface.
+# The bonds within the agglomerate will fail while the agglomerate is hitting the surface.
+# Then the agglomerate will break into fragments, flying to the surrounding space.
+# This could be a good example of validating EBPM.
+# Parameters to set:
+# set_domain_min = Vector3(-0.5, -0.5, -0.5)
+# set_domain_max = Vector3(0.11, 0.5, 0.5)
+# set_init_particles = "Resources/cube_911_particles_impact.p4p"
+# set_wall_normal = Vector3(1.0, 0.0, 0.0)
+# set_wall_distance = 0.02
+# DEMSolverConfig.dt = 1e-7
+# DEMSolverConfig.target_time = 0.01
+# DEMSolverConfig.saving_interval_time = 1e-4
+# DEMSolverConfig.gravity = Vector3(0.0, 0.0, 0.0)
+#
+# 3. Cube with 18112 particles impact on a flat surface
+# This demo is similar to the one above, with the only difference of particle number.
+# This could be a good example of benchmark on large system simulation.
+# Parameters to set:
+# set_domain_min = Vector3(-10, -10, -10)
+# set_domain_max = Vector3(0.11, 10, 10)
+# set_init_particles = "Resources/cube_18112_particles_impact.p4p"
+# set_wall_normal = Vector3(1.0, 0.0, 0.0)
+# set_wall_distance = 0.1
+# DEMSolverConfig.dt = 1e-7
+# DEMSolverConfig.target_time = 0.1
+# DEMSolverConfig.saving_interval_time = 0.001
+# DEMSolverConfig.gravity = Vector3(0.0, 0.0, 0.0)
+
 
 from math import pi
 import taichi as ti
@@ -48,10 +96,10 @@ DEMMatrix = Matrix3x3
 #=====================================
 # DEM Simulation Configuration
 #=====================================
-set_domain_min: Vector3 = Vector3(-5,-5,-5)
-set_domain_max: Vector3 = Vector3(0.1,5,5)
+set_domain_min: Vector3 = Vector3(-0.5, -0.5, -0.5)
+set_domain_max: Vector3 = Vector3(0.11, 0.5, 0.5)
 
-set_init_particles: str = "Resources/cube_18112_particles_impact.p4p"
+set_init_particles: str = "Resources/cube_911_particles_impact.p4p"
 
 set_particle_contact_radius_multiplier: Real = 1.1;
 set_neiboring_search_safety_factor: Real = 1.2;
@@ -59,7 +107,7 @@ set_particle_elastic_modulus: Real = 7e10;
 set_particle_poisson_ratio: Real = 0.25;
 
 set_wall_normal: Vector3 = Vector3(1.0, 0.0, 0.0);
-set_wall_distance: Real = 0.1;
+set_wall_distance: Real = 0.02;
 set_wall_density: Real = 7800.0;
 set_wall_elastic_modulus: Real = 2e11;
 set_wall_poisson_ratio: Real = 0.25;
@@ -90,10 +138,10 @@ class DEMSolverConfig:
         self.global_damping = 0.0;
         # Time step, a global parameter
         self.dt : Real = 1e-7  # Larger dt might lead to unstable results.
-        self.target_time : Real = 0.001
+        self.target_time : Real = 0.01
         # No. of steps for run, a global parameter
         self.nsteps : Integer = int(self.target_time / self.dt)
-        self.saving_interval_time : Real = 1e-5
+        self.saving_interval_time : Real = 1e-4
         self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
 
 class DEMSolverStatistics:
@@ -514,7 +562,7 @@ class Surface: # Size: 72B
     shearStrength: Real # Shear strength of the bond
 
 # Particle in DEM
-# Denver Pilphis: keep spherical shape first, added particle attributes to make the particle kinematically complete
+# Denver Pilphis: keep spherical shape at this stage, added particle attributes to make the particle kinematically complete
 @ti.dataclass
 class Grain: # Size: 296B
     ID: Integer # Record Grain ID
@@ -1116,7 +1164,7 @@ class DEMSolver:
                 #    # K[7, 5] is WRONG in original EBPM document
                 #    # ΔFay + ΔFby is nonzero
                 #    # which does not satisfy the equilibrium
-                #    # Acknowledgement to Dr. Xizhong Chen in 
+                #    # Acknowledgement to Dr. Xizhong Chen from
                 #    # Department of Chemical and Biological Engineering,
                 #    # The University of Sheffield
                 #    # Reference: Chen et al. (2022) A comparative assessment and unification of bond models in DEM simulations.

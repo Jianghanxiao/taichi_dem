@@ -1,10 +1,3 @@
-.DS_Store
-*.png
-*.mp4
-.idea
-AssignParticleVelocityEDEM/
-BindP4/
-Demos/
-Sample/
 taichi_dem_cpp_equivalent/.vs/
 taichi_dem_cpp_equivalent/x64/
+output*
