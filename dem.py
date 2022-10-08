@@ -69,11 +69,15 @@
 
 
 from math import pi
+from multiprocessing import current_process
 import taichi as ti
 import taichi.math as tm
 import os
 import numpy as np
 import time
+
+# init taichi context
+ti.init(arch=ti.gpu, device_memory_GB=6)
 
 #=====================================
 # Type Definition
@@ -96,8 +100,8 @@ DEMMatrix = Matrix3x3
 #=====================================
 # DEM Simulation Configuration
 #=====================================
-set_domain_min: Vector3 = Vector3(-0.5, -0.5, -0.5)
-set_domain_max: Vector3 = Vector3(0.11, 0.5, 0.5)
+set_domain_min: Vector3 = Vector3(-5,-5,-5)
+set_domain_max: Vector3 = Vector3(0.1,5,5)
 
 set_init_particles: str = "Resources/cube_911_particles_impact.p4p"
 
@@ -128,7 +132,18 @@ set_pw_coefficient_restitution: Real = 0.7;
 set_pw_coefficient_rolling_resistance: Real = 0.01;
 
 set_max_coordinate_number: Integer = 16;
+# reserve  collision pair count as (set_collision_pair_init_capacity_factor * n)
+set_collision_pair_init_capacity_factor = 32;
 
+#=====================================
+# Environmental Variables
+#=====================================
+DoublePrecisionTolerance: float = 1e-12; # Boundary between zeros and non-zeros
+MaxParticleCount: int = 10000000;
+
+#=====================================
+# Init Data Structure
+#=====================================
 class DEMSolverConfig:
     def __init__(self):
         # Gravity, a global parameter
@@ -138,10 +153,10 @@ class DEMSolverConfig:
         self.global_damping = 0.0;
         # Time step, a global parameter
         self.dt : Real = 1e-7  # Larger dt might lead to unstable results.
-        self.target_time : Real = 0.01
+        self.target_time : Real = 0.001
         # No. of steps for run, a global parameter
         self.nsteps : Integer = int(self.target_time / self.dt)
-        self.saving_interval_time : Real = 1e-4
+        self.saving_interval_time : Real = 1e-5
         self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
 
 class DEMSolverStatistics:
@@ -180,33 +195,22 @@ class DEMSolverStatistics:
         self.UpdateTime = self.Timer()
         
     
-    def pct(self, x:Timer):
+    def _pct(self, x:Timer):
         if(self.SolveTime.total == 0.0): return '0%'
         return str(x.total / self.SolveTime.total * 100) + '%'
     
     def report(self):
         print(f"Total              = {self.SolveTime}\n"
-              f"ApplyForceTime     = {self.ApplyForceTime}({self.pct(self.ApplyForceTime)})\n"
-              f"UpdateTime         = {self.UpdateTime}({self.pct(self.UpdateTime)})\n"
-              f"ResolveWallTime    = {self.ResolveWallTime}({self.pct(self.ResolveWallTime)})\n"
-              f"ContactTime        = {self.ContactTime}({self.pct(self.ContactTime)})\n"
-              f"    -BPCD               = {self.BroadPhaseDetectionTime}({self.pct(self.BroadPhaseDetectionTime)})\n"
-              f"        --HashTableSetupTime      = {self.HashTableSetupTime}({self.pct(self.HashTableSetupTime)})\n"
-              f"        --PrefixSumTime           = {self.PrefixSumTime}({self.pct(self.PrefixSumTime)})\n"
-              f"        --CollisionPairSetupTime  = {self.CollisionPairSetupTime}({self.pct(self.CollisionPairSetupTime)})\n"
-              f"    -ContactResolveTime = {self.ContactResolveTime}({self.pct(self.ContactResolveTime)})\n"
+              f"ApplyForceTime     = {self.ApplyForceTime}({self._pct(self.ApplyForceTime)})\n"
+              f"UpdateTime         = {self.UpdateTime}({self._pct(self.UpdateTime)})\n"
+              f"ResolveWallTime    = {self.ResolveWallTime}({self._pct(self.ResolveWallTime)})\n"
+              f"ContactTime        = {self.ContactTime}({self._pct(self.ContactTime)})\n"
+              f"    -BPCD               = {self.BroadPhaseDetectionTime}({self._pct(self.BroadPhaseDetectionTime)})\n"
+              f"        --HashTableSetupTime      = {self.HashTableSetupTime}({self._pct(self.HashTableSetupTime)})\n"
+              f"        --PrefixSumTime           = {self.PrefixSumTime}({self._pct(self.PrefixSumTime)})\n"
+              f"        --CollisionPairSetupTime  = {self.CollisionPairSetupTime}({self._pct(self.CollisionPairSetupTime)})\n"
+              f"    -ContactResolveTime = {self.ContactResolveTime}({self._pct(self.ContactResolveTime)})\n"
               )
-    
-        
-
-#=====================================
-# Environmental Variables
-#=====================================
-DoublePrecisionTolerance: float = 1e-12; # Boundary between zeros and non-zeros
-MaxParticleCount: int = 10000000;
-
-# init taichi context
-ti.init(arch=ti.gpu)
 
 #=====================================
 # Utils
@@ -214,7 +218,7 @@ ti.init(arch=ti.gpu)
 def cal_neighbor_search_radius(max_radius):
     return max_radius * set_particle_contact_radius_multiplier * (1.0 + set_bond_tensile_strength / set_bond_elastic_modulus) * set_neiboring_search_safety_factor
 
-def next_pow2(x:ti.i32):
+def next_pow2(x):
     x -= 1
     x |= (x >> 1)
     x |= (x >> 2)
@@ -269,11 +273,26 @@ def quat2RotMatrix(quat : Vector4) -> Matrix3x3:
 
     return result
 
+
 #======================================
 # Broad Phase Collision Detection
 #======================================
 @ti.data_oriented
 class PrefixSumExecutor:
+    def __init__(self):
+        self.tree:ti.SNode = None
+        self.temp:ti.StructField = None
+
+    def _resize_temp(self, n):
+        if(self.tree != None):
+            if(self.temp.shape[0] >= n): return
+            else: self.tree.destroy()
+        # realloc
+        fb = ti.FieldsBuilder()
+        self.temp = ti.field(Integer)
+        fb.dense(ti.i, n).place(self.temp)
+        self.tree = fb.finalize()
+    
     @ti.kernel
     def serial(self, output:ti.template(), input:ti.template()):
         n = input.shape[0]
@@ -310,8 +329,13 @@ class PrefixSumExecutor:
               output:ti.template(),
               input:ti.template()):
         for i in range(n): output[i] = input[i]
+    @ti.kernel
+    def _copy_and_clear(self, n:Integer, npad:Integer, input:ti.template()):
+        for i in range(n): self.temp[i] = input[i]
+        for i in range(n, npad): self.temp[i] = 0
 
-    def parallel(self,output,input):
+    def parallel_fast(self,output,input, cal_total = False):
+        ti.static_assert(next_pow2(input.shape[0])==input.shape[0], "parallel_fast requires input count = 2**p")
         n:ti.i32 = input.shape[0]
         d = n >> 1
         self._copy(n, output,input)
@@ -327,6 +351,28 @@ class PrefixSumExecutor:
             offset >>= 1
             self._up(d,n,offset,output)
             d <<= 1
+        if(cal_total): return output[n-1] + input[n -1]
+    
+    def parallel(self,output,input,cal_total = False):
+        n:ti.i32 = input.shape[0]
+        npad = next_pow2(n)
+        self._resize_temp(npad)
+        self._copy_and_clear(n,npad,input)
+        d = npad >> 1
+        offset = 1
+        while(d > 0):
+            self._down(d,npad,offset,self.temp)
+            offset <<= 1
+            d >>= 1
+        
+        self.temp[npad-1] = 0
+        d = 1
+        while(d < npad):
+            offset >>= 1
+            self._up(d,npad,offset,self.temp)
+            d <<= 1
+        self._copy(n, output, self.temp)
+        if(cal_total): return output[n-1] + input[n -1]
 
 
 @ti.data_oriented
@@ -406,7 +452,7 @@ class BPCD:
         if(self.statistics!=None):self.statistics.HashTableSetupTime.tick()
 
         if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
-        self.pse.parallel(self.hash_table.offset, self.hash_table.count)
+        self.pse.parallel_fast(self.hash_table.offset, self.hash_table.count)
         # self.pse.serial(self.hash_table.offset, self.hash_table.count)
         if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
         
@@ -469,7 +515,8 @@ class BPCD:
                        # and tm.distance(o,other_o) <= r + other_r
                        ):
                         collision_resolve_callback(i, pid)
-    
+
+
     @ti.kernel
     def brute_resolve_collision(self,
                                 positions:ti.template(), 
@@ -487,8 +534,8 @@ class BPCD:
                 # other_r = bounding_sphere_radius[j]
                 # if(tm.distance(o,other_o) <= r + other_r):
                 collision_resolve_callback(i, j)
-        
-    
+
+
     # https://stackoverflow.com/questions/1024754/how-to-compute-a-3d-morton-number-interleave-the-bits-of-3-ints
     @ti.func
     def morton3d32(x:Integer,y:Integer,z:Integer) -> Integer:
@@ -534,6 +581,7 @@ class BPCD:
         for i in ti.static(range(3)):
             ret[i] = (ijk[i] + 0.5) * self.cell_size + self.domain_min[i]
         return ret
+
 
 #======================================
 # Data Class Definition
@@ -623,6 +671,14 @@ class Contact: # Size: 144B
     # Hertz-Mindlin parts
     shear_displacement: Vector3 # Shear displacement stored in the contact
 
+
+@ti.dataclass
+class Range:
+    offset:Integer
+    count:Integer
+    current:Integer
+
+
 @ti.dataclass
 class IOContact: # Size: 64B
     '''
@@ -635,9 +691,16 @@ class IOContact: # Size: 64B
     isBonded:Integer
     isActive:Integer
 
+class WorkloadType:
+    Auto = -1
+    Light = 0
+    Midium = 1
+    Heavy = 2
+
 @ti.data_oriented
 class DEMSolver:
-    def __init__(self, config:DEMSolverConfig, statistics:DEMSolverStatistics = None):
+    
+    def __init__(self, config:DEMSolverConfig, statistics:DEMSolverStatistics = None, workload = WorkloadType.Auto):
         self.config:DEMSolverConfig = config
         # Broad phase collisoin detection
         self.bpcd:BPCD
@@ -655,8 +718,18 @@ class DEMSolver:
 
         self.cp:ti.StructField # collision pairs
         self.cn:ti.SNode # collision pair node
-        self.statistics = statistics
-
+        
+        # collision pair list
+        self.cp_list:ti.StructField
+        # collision pair range
+        self.cp_range:ti.StructField
+        # manage cp_list
+        self.cp_tree_node:ti.SNode = None
+        # collision pair prefix sum
+        self.cp_pse:PrefixSumExecutor = PrefixSumExecutor()
+        
+        self.statistics:DEMSolverStatistics = statistics
+        self.workload_type = workload
 
     def save(self, file_name:str, time:float):
         '''
@@ -668,7 +741,6 @@ class DEMSolver:
         self.save_single(p4p, p4c, time)
         p4p.close()
         p4c.close()
-
 
 
     def save_single(self, p4pfile, p4cfile, t:float):
@@ -750,12 +822,20 @@ class DEMSolver:
         print(f"save time cost = {tk2 - tk1}")
 
 
+    def check_workload(self, n):
+        if(self.workload_type == WorkloadType.Auto):
+            if(n < 1000): self.workload_type = WorkloadType.Light
+            elif(n < 20000): self.workload_type = WorkloadType.Midium
+            else: self.workload_type = WorkloadType.Heavy
+
+
     def init_particle_fields(self, file_name:str, domain_min:Vector3, domain_max:Vector3):
         fp = open(file_name, encoding="UTF-8")
         line : str = fp.readline() # "TIMESTEP  PARTICLES" line
         line = fp.readline().removesuffix('\n') # "0 18112" line
         n = int(line.split(' ')[1])
         n = min(n, MaxParticleCount)
+        self.check_workload(n)
         nwall = 1
 
         # Initialize particles
@@ -868,25 +948,25 @@ class DEMSolver:
         self.surf[1, 0] = self.surf[0, 1];
 
         # surf[1, 1] is insensible
-        r = cal_neighbor_search_radius(max_radius)
-        self.bpcd = BPCD.create(n, r, domain_min, domain_max)
-        self.bpcd.statistics = self.statistics
+        if(self.workload_type > WorkloadType.Light):
+            r = cal_neighbor_search_radius(max_radius)
+            self.bpcd = BPCD.create(n, r, domain_min, domain_max)
+            self.bpcd.statistics = self.statistics
+            
+        if(self.workload_type ==  WorkloadType.Midium):
+            u1 = ti.types.quant.int(1, False)
+            self.cp = ti.field(u1)
+            self.cn = ti.root.dense(ti.i, round32(n * n)//32).quant_array(ti.i, dimensions=32, max_num_bits=32).place(self.cp)
         
-        u1 = ti.types.quant.int(1, False)
-        self.cp = ti.field(u1)
-        self.cn = ti.root.dense(ti.i, round32(n * n)//32).quant_array(ti.i, dimensions=32, max_num_bits=32).place(self.cp)
-        
-        # self.cf = Contact.field()
-        # self.cfn = ti.root.pointer(ti.ij, (n,n)).place(self.cf)
+        if(self.workload_type ==  WorkloadType.Heavy):
+            self.resize_cp_list(set_collision_pair_init_capacity_factor * n)
+            self.cp_range = Range.field(shape=n)
         
         self.cf = Contact.field(shape=set_max_coordinate_number * n)
-        self.cfn = ti.field(Integer, shape = n)
-        
-        # self.collision_pairs = ti.field(ti.i8)
-        # self.collision_node = ti.root.pointer(ti.ij,(n,n))
-        # self.collision_node.place(self.collision_pairs)
+        self.cfn = ti.field(Integer, shape=n)
 
 
+# >>> contact field utils
     @ti.func
     def append_contact_offset(self, i):
         ret = -1
@@ -895,7 +975,6 @@ class DEMSolver:
         if(offset < set_max_coordinate_number):
             ret =  i * set_max_coordinate_number + offset
         return ret
-
 
     @ti.func
     def search_active_contact_offset(self, i, j):
@@ -906,7 +985,7 @@ class DEMSolver:
                     ret = i * set_max_coordinate_number + offset
                     break
         return ret
-
+    
     @ti.func 
     def remove_inactive_contact(self, i):
         active_count = 0
@@ -922,8 +1001,15 @@ class DEMSolver:
         for j in range(active_count, self.cfn[i]):
             self.cf[i * set_max_coordinate_number + j].isActive = False
         self.cfn[i] = active_count
-        
-            
+# <<< contact field utils
+
+
+# >>> collision bit table utils
+    @ti.kernel
+    def clear_cp_bit_table(self):
+        ti.loop_config(bit_vectorize=True)
+        for i in ti.grouped(self.cp):
+            self.cp[i] = 0
 
     @ti.func
     def set_collision_bit(self, i:ti.i32, j:ti.i32):
@@ -940,6 +1026,48 @@ class DEMSolver:
 
 
     @ti.kernel
+    def cp_bit_table_resolve_collision(self):
+        size = self.gf.shape[0]
+        for i,j in ti.ndrange(size, size):
+            if(self.get_collision_bit(i,j)): self.resolve(i, j)
+# <<< collision bit table utils
+
+
+# >>> collision pair list utils
+    @ti.kernel
+    def cp_list_resolve_collision(self):
+        for i in self.cp_range:
+            for k in range(self.cp_range[i].count):
+                j = self.cp_list[self.cp_range[i].offset + k]
+                self.resolve(i, j)
+    
+    def resize_cp_list(self, n):
+        if(self.cp_tree_node!=None):
+            self.cp_tree_node.destroy()
+        fb = ti.FieldsBuilder()
+        self.cp_list = ti.field(Integer)
+        fb.dense(ti.i, n).place(self.cp_list)
+        self.cp_tree_node = fb.finalize()  # Finalizes the FieldsBuilder and returns a SNodeTree
+    
+    @ti.kernel
+    def clear_collision_pair(self):
+        for i in self.cp_range:
+            self.cp_range[i].offset = 0
+            self.cp_range[i].count = 0
+            self.cp_range[i].current = 0
+
+    @ti.func
+    def count_collision_pair(self, i : Integer, j : Integer):
+        ti.atomic_add(self.cp_range[i].count, 1)
+
+    @ti.func
+    def setup_collision_pair(self, i : Integer, j : Integer):
+        current = ti.atomic_add(self.cp_range[i].current, 1)
+        self.cp_list[self.cp_range[i].offset + current] = j
+# <<< collision pair list utils
+
+
+    @ti.kernel
     def clear_state(self):
         #alias
         gf = ti.static(self.gf)
@@ -947,7 +1075,7 @@ class DEMSolver:
         for i in gf:
             gf[i].force = Vector3(0.0, 0.0, 0.0)
             gf[i].moment = Vector3(0.0, 0.0, 0.0)
-           
+
 
     @ti.kernel
     def late_clear_state(self):
@@ -955,6 +1083,7 @@ class DEMSolver:
         # remove inactive contact and do compress
         for i in gf:
             self.remove_inactive_contact(i)
+
 
     @ti.kernel
     def apply_body_force(self):
@@ -1032,21 +1161,10 @@ class DEMSolver:
             gf[i].quaternion = tm.normalize(gf[i].quaternion)
             # Update angular velocity
             gf[i].omega += gf[i].omega_dot * dt
-
             # ti.atomic_add(kinematic_energy, gf[i].mass / 2.0 * tm.dot(gf[i].velocity, gf[i].velocity));
-        
         # print(f"{kinematic_energy}");
 
 
-    @ti.kernel
-    def resolve_collision(self):
-        # for i,j in self.collision_pairs:
-        #     self.resolve(i,j)
-        size = self.gf.shape[0]
-        for i,j in ti.ndrange(size, size):
-            if(self.get_collision_bit(i,j)): self.resolve(i, j)
-    
-    
     @ti.func
     def resolve(self, i : Integer, j : Integer):
         '''
@@ -1298,13 +1416,6 @@ class DEMSolver:
                 ti.atomic_add(gf[i].moment, tm.cross(r_i, F_i_global))
                 ti.atomic_add(gf[j].moment, tm.cross(r_j, F_j_global))
 
-
-    @ti.func
-    def on_collision(self, i : Integer, j : Integer):
-        # self.collision_pairs[i,j] = 1
-        self.set_collision_bit(i,j)
-
-
     @ti.func
     def evaluate_wall(self, i : Integer, j : Integer): # i is particle, j is wall
         '''
@@ -1314,7 +1425,6 @@ class DEMSolver:
         
         # alias
         gf = ti.static(self.gf)
-        # cf = ti.static(self.cf)
         wf = ti.static(self.wf)
         wcf = ti.static(self.wcf)
 
@@ -1472,8 +1582,6 @@ class DEMSolver:
                 )
             else:
                 print(f"ERROR: coordinate number > set_max_coordinate_number({set_max_coordinate_number})")
-            if(i == 867 and j == 869):
-                print(f"len = {tm.length(gf[j].position - gf[i].position)}")
 
 
     def bond(self):
@@ -1481,14 +1589,12 @@ class DEMSolver:
         Similar to contact, but runs only once at the beginning
         '''
         # In example 911, brute detection has better efficiency
-        self.bpcd.resolve_collision(self.gf.position, self.bond_detect)
-        # self.bpcd.brute_resolve_collision(self.gf.position, self.bond_detect)
+        if(self.workload_type == WorkloadType.Light):
+            self.bpcd.brute_resolve_collision(self.gf.position, self.bond_detect)
+        else:
+            self.bpcd.resolve_collision(self.gf.position, self.bond_detect)
 
-    @ti.kernel
-    def clear_cp(self):
-        ti.loop_config(bit_vectorize=True)
-        for i in ti.grouped(self.cp):
-            self.cp[i] = 0
+
 
     # Neighboring search
     def contact(self):
@@ -1496,17 +1602,37 @@ class DEMSolver:
         Handle the collision between grains.
         '''
         # In example 911, brute detection has better efficiency
-        # self.collision_node.deactivate_all()
-        if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
-        # self.cp.fill(0)
-        self.clear_cp()
-        self.bpcd.resolve_collision(self.gf.position, self.on_collision)
-        # self.bpcd.brute_resolve_collision(self.gf.position, self.on_collision)
-        if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
+        if(self.workload_type == WorkloadType.Light):
+            if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
+            self.bpcd.brute_resolve_collision(self.gf.position, self.resolve)
+            if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
         
-        if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
-        self.resolve_collision()
-        if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
+        # In example 18112, collision pair bit table  has better efficiency
+        if(self.workload_type == WorkloadType.Midium):
+            if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
+            self.clear_cp_bit_table()
+            self.bpcd.resolve_collision(self.gf.position, self.set_collision_bit)
+            if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
+            
+            if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
+            self.cp_bit_table_resolve_collision()
+            if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
+        
+        if(self.workload_type == WorkloadType.Heavy):
+            if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
+            self.clear_collision_pair()
+            self.bpcd.resolve_collision(self.gf.position, self.count_collision_pair)
+            total = self.cp_pse.parallel(self.cp_range.offset, self.cp_range.count, cal_total = True)
+            if(total > self.cp_list.shape[0]):
+                count = max(total, self.cp_list.shape[0] + self.gf.shape[0] * set_collision_pair_init_capacity_factor)
+                self.resize_cp_list(count)
+            self.bpcd.resolve_collision(self.gf.position, self.setup_collision_pair)
+            if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
+            
+            if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
+            self.cp_list_resolve_collision()
+            if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
+
 
 
     def run_simulation(self):
@@ -1554,9 +1680,9 @@ window_size = 1024  # Number of pixels of the window
 if __name__ == '__main__':
     config = DEMSolverConfig()
     # Disable simulation benchmark
-    statistics = None
-    # statistics = DEMSolverStatistics()
-    solver = DEMSolver(config, statistics)
+    # statistics = None
+    statistics = DEMSolverStatistics()
+    solver = DEMSolver(config, statistics, WorkloadType.Auto)
     domain_min = set_domain_min
     domain_max = set_domain_max
     solver.init_particle_fields(set_init_particles,domain_min,domain_max)
@@ -1599,7 +1725,7 @@ if __name__ == '__main__':
             print('>>>')
             print(f"solved steps: {step} last-{config.saving_interval_steps}-sim: {t2-t1}s")
             solver.save_single(p4p, p4c, solver.config.dt * step)
-            #solver.save(f'output_data/{step:07d}', elapsed_time)
+            solver.save(f'output_data/{step}', elapsed_time)
             if(solver.statistics): solver.statistics.report()
             print('<<<')
         p4p.close()
