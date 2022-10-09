@@ -32,6 +32,7 @@
 # set_init_particles = "Resources/carom.p4p"
 # set_wall_normal = Vector3(0.0, 0.0, -1.0)
 # set_wall_distance = 0.03125
+# set_max_coordinate_number = 16
 # DEMSolverConfig.dt = 2.56e-6
 # DEMSolverConfig.target_time = 1.28
 # DEMSolverConfig.saving_interval_time = 2.56e-3
@@ -48,6 +49,7 @@
 # set_init_particles = "Resources/cube_911_particles_impact.p4p"
 # set_wall_normal = Vector3(1.0, 0.0, 0.0)
 # set_wall_distance = 0.02
+# set_max_coordinate_number = 16
 # DEMSolverConfig.dt = 1e-7
 # DEMSolverConfig.target_time = 0.01
 # DEMSolverConfig.saving_interval_time = 1e-4
@@ -62,10 +64,26 @@
 # set_init_particles = "Resources/cube_18112_particles_impact.p4p"
 # set_wall_normal = Vector3(1.0, 0.0, 0.0)
 # set_wall_distance = 0.1
+# set_max_coordinate_number = 16
 # DEMSolverConfig.dt = 1e-7
 # DEMSolverConfig.target_time = 0.1
 # DEMSolverConfig.saving_interval_time = 0.001
 # DEMSolverConfig.gravity = Vector3(0.0, 0.0, 0.0)
+#
+# 4. Stanford bunny free fall
+# This demo contains a Stanford bunny falling in gravity and hitting on the flat surface.
+# The breakage of the bunny is demonstrated.
+# Parameters to set:
+# set_domain_min = Vector3(-200.0, -200.0, -30.0)
+# set_domain_max = Vector3(200.0, 200.0, 90.0)
+# set_init_particles = "Resources/bunny.p4p"
+# set_wall_normal = Vector3(0.0, 0.0, -1.0)
+# set_wall_distance = 25.0
+# set_max_coordinate_number = 40
+# DEMSolverConfig.dt = 2.63e-5
+# DEMSolverConfig.target_time = 10
+# DEMSolverConfig.saving_interval_time = 0.1
+# DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
 
 
 from math import pi
@@ -77,7 +95,7 @@ import numpy as np
 import time
 
 # init taichi context
-ti.init(arch=ti.gpu, device_memory_GB=6)
+ti.init(arch=ti.gpu)
 
 #=====================================
 # Type Definition
@@ -100,18 +118,18 @@ DEMMatrix = Matrix3x3
 #=====================================
 # DEM Simulation Configuration
 #=====================================
-set_domain_min: Vector3 = Vector3(-5,-5,-5)
-set_domain_max: Vector3 = Vector3(0.1,5,5)
+set_domain_min: Vector3 = Vector3(-200.0, -200.0, -30.0)
+set_domain_max: Vector3 = Vector3(200.0, 200.0, 90.0)
 
-set_init_particles: str = "Resources/cube_911_particles_impact.p4p"
+set_init_particles: str = "Resources/bunny.p4p"
 
 set_particle_contact_radius_multiplier: Real = 1.1;
 set_neiboring_search_safety_factor: Real = 1.2;
 set_particle_elastic_modulus: Real = 7e10;
 set_particle_poisson_ratio: Real = 0.25;
 
-set_wall_normal: Vector3 = Vector3(1.0, 0.0, 0.0);
-set_wall_distance: Real = 0.02;
+set_wall_normal: Vector3 = Vector3(0.0, 0.0, -1.0);
+set_wall_distance: Real = 25.0;
 set_wall_density: Real = 7800.0;
 set_wall_elastic_modulus: Real = 2e11;
 set_wall_poisson_ratio: Real = 0.25;
@@ -131,7 +149,7 @@ set_pw_coefficient_friction: Real = 0.35;
 set_pw_coefficient_restitution: Real = 0.7;
 set_pw_coefficient_rolling_resistance: Real = 0.01;
 
-set_max_coordinate_number: Integer = 16;
+set_max_coordinate_number: Integer = 40;
 # reserve  collision pair count as (set_collision_pair_init_capacity_factor * n)
 set_collision_pair_init_capacity_factor = 32;
 
@@ -148,15 +166,15 @@ class DEMSolverConfig:
     def __init__(self):
         # Gravity, a global parameter
         # Denver Pilphis: in this example, we assign no gravity
-        self.gravity : Vector3 = Vector3(0.0, 0.0, 0.0)
+        self.gravity : Vector3 = Vector3(0.0, 0.0, -9.81)
         # Global damping coefficient
         self.global_damping = 0.0;
         # Time step, a global parameter
-        self.dt : Real = 1e-7  # Larger dt might lead to unstable results.
-        self.target_time : Real = 0.001
+        self.dt : Real = 2.63e-5  # Larger dt might lead to unstable results.
+        self.target_time : Real = 10
         # No. of steps for run, a global parameter
         self.nsteps : Integer = int(self.target_time / self.dt)
-        self.saving_interval_time : Real = 1e-5
+        self.saving_interval_time : Real = 0.1
         self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
 
 class DEMSolverStatistics:
