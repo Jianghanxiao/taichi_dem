@@ -481,7 +481,7 @@ class BPCD:
         self._put_particles(positions)
         
         if(self.statistics!=None):self.statistics.CollisionPairSetupTime.tick()
-        if(self.type == BPCD.Implicit):
+        if(self.type == BPCD.Implicit or collision_resolve_callback != None):
             self._solve_collision(positions, collision_resolve_callback)
         elif(self.type == BPCD.ExplicitCollisionPair):
             self._clear_collision_pair()
@@ -1847,6 +1847,7 @@ if __name__ == '__main__':
         p4p = open('output.p4p',encoding="UTF-8",mode='w')
         p4c = open('output.p4c',encoding="UTF-8",mode='w')
         solver.save_single(p4p,p4c,solver.config.dt * step)
+        solver.save(f'output_data/{step}', elapsed_time)
         while step < config.nsteps:
             t1 = time.time()
             for _ in range(config.saving_interval_steps): 
