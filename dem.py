@@ -73,16 +73,17 @@
 # 4. Stanford bunny free fall
 # This demo contains a Stanford bunny falling in gravity and hitting on the flat surface.
 # The breakage of the bunny is demonstrated.
+# This could be a good example of benchmark on large system simulation.
 # Parameters to set:
 # set_domain_min = Vector3(-200.0, -200.0, -30.0)
 # set_domain_max = Vector3(200.0, 200.0, 90.0)
 # set_init_particles = "Resources/bunny.p4p"
 # set_wall_normal = Vector3(0.0, 0.0, -1.0)
-# set_wall_distance = 25.0
-# set_max_coordinate_number = 40
+# set_wall_distance = 1.0
+# set_max_coordinate_number = 64
 # DEMSolverConfig.dt = 2.63e-5
-# DEMSolverConfig.target_time = 10
-# DEMSolverConfig.saving_interval_time = 0.1
+# DEMSolverConfig.target_time = 5.0
+# DEMSolverConfig.saving_interval_time = 0.05
 # DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
 
 
@@ -93,8 +94,9 @@ import os
 import numpy as np
 import time
 
-# init taichi context
-ti.init(arch=ti.gpu, device_memory_GB=4, debug=False)
+# Init taichi context
+# Device memory size is recommended to be 75% of the GPU VRAM
+ti.init(arch=ti.gpu, device_memory_GB=6, debug=False)
 
 #=====================================
 # Type Definition
@@ -128,7 +130,7 @@ set_particle_elastic_modulus: Real = 7e10;
 set_particle_poisson_ratio: Real = 0.25;
 
 set_wall_normal: Vector3 = Vector3(0.0, 0.0, -1.0);
-set_wall_distance: Real = 25.0;
+set_wall_distance: Real = 1.0;
 set_wall_density: Real = 7800.0;
 set_wall_elastic_modulus: Real = 2e11;
 set_wall_poisson_ratio: Real = 0.25;
@@ -149,14 +151,14 @@ set_pw_coefficient_restitution: Real = 0.7;
 set_pw_coefficient_rolling_resistance: Real = 0.01;
 
 set_max_coordinate_number: Integer = 64;
-# reserve  collision pair count as (set_collision_pair_init_capacity_factor * n)
+# reserve collision pair count as (set_collision_pair_init_capacity_factor * n)
 set_collision_pair_init_capacity_factor = 128;
 
 #=====================================
 # Environmental Variables
 #=====================================
 DoublePrecisionTolerance: float = 1e-12; # Boundary between zeros and non-zeros
-MaxParticleCount: int = 10000000000;
+MaxParticleCount: int = 1000000000;
 
 #=====================================
 # Init Data Structure
@@ -170,10 +172,10 @@ class DEMSolverConfig:
         self.global_damping = 0.0;
         # Time step, a global parameter
         self.dt : Real = 2.63e-5  # Larger dt might lead to unstable results.
-        self.target_time : Real = 10
+        self.target_time : Real = 5.0
         # No. of steps for run, a global parameter
         self.nsteps : Integer = int(self.target_time / self.dt)
-        self.saving_interval_time : Real = 0.01 # 0.1
+        self.saving_interval_time : Real = 0.05
         self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
 
 class DEMSolverStatistics:
@@ -1401,7 +1403,7 @@ class DEMSolver:
                     k3 * (disp_b[2] - disp_a[2]) + k5 * rot_a[1] + k6 * rot_b[1],
                     k3 * (disp_a[1] - disp_b[1]) + k5 * rot_a[2] + k6 * rot_b[2]
                 )
-                # No need to calculate inc_force_b as inc_force_b == - inc_force_a and force_b == force_a
+                # No need to calculate inc_force_b as inc_force_b == - inc_force_a and force_b == - force_a
                 inc_moment_b = Vector3(
                     k4 * (rot_b[0] - rot_a[0]),
                     k3 * (disp_b[2] - disp_a[2]) + k6 * rot_a[1] + k5 * rot_b[1],
@@ -1847,7 +1849,7 @@ if __name__ == '__main__':
         p4p = open('output.p4p',encoding="UTF-8",mode='w')
         p4c = open('output.p4c',encoding="UTF-8",mode='w')
         solver.save_single(p4p,p4c,solver.config.dt * step)
-        solver.save(f'output_data/{step}', elapsed_time)
+        # solver.save(f'output_data/{step}', elapsed_time)
         while step < config.nsteps:
             t1 = time.time()
             for _ in range(config.saving_interval_steps): 
@@ -1859,7 +1861,7 @@ if __name__ == '__main__':
             print('>>>')
             print(f"solved steps: {step} last-{config.saving_interval_steps}-sim: {t2-t1}s")
             solver.save_single(p4p, p4c, solver.config.dt * step)
-            solver.save(f'output_data/{step}', elapsed_time)
+            # solver.save(f'output_data/{step}', elapsed_time)
             if(solver.statistics): solver.statistics.report()
             print('<<<')
         p4p.close()
