@@ -27,7 +27,7 @@
 #     of parallel computing, in which bit table and parallel scan algorithm are adopted for low and high
 #     workloads respectively;
 # 11. Contacts are stored via the dynamic list linked to each particle to reduce the space cost, and the list
-#     is maintained (including appending and removing contacts) during every time step;
+#     is maintained (including appending and removing contacts) during every time step.
 #
 # Demos
 # 1. Carom billiards

@@ -39,7 +39,7 @@ Compared with initial version, this instance has added the following features:
 9.  Spatial hash table is implemented based on Morton code for neighboring search (broad phase collision
     detection);
 10. Neighboring pairs are stored to reduce the divergence within the kernel and thus increase the efficiency of parallel computing, in which bit table and parallel scan algorithm are adopted for low and high workloads respectively;
-11. Contacts are stored via the dynamic list linked to each particle to reduce the space cost, and the list is maintained (including appending and removing contacts) during every time step;
+11. Contacts are stored via the dynamic list linked to each particle to reduce the space cost, and the list is maintained (including appending and removing contacts) during every time step.
 
 ## Demos
 ### Carom billiards
