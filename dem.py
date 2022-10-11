@@ -11,14 +11,23 @@
 #
 # Features
 # Compared with initial version, this instance has added the following features:
-# 1. 2D DEM to 3D DEM;
-# 2. Particle orientation and rotation are fully considered and implemented, in which the possibility
-#    for modeling nonspherical particles is reserved;
-# 3. Wall (geometry in DEM) element is implemented, particle-wall contact is solved;
-# 4. Complex DEM contact model is implemented, including a bond model (Edinburgh Bonded Particle Model, EBPM)
-#    and a granular contact model (Hertz-Mindlin Contact Model);
-# 5. As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates;
-# 6. As a bond model is implemented, particle breakage can be simulated.
+# 1.  2D DEM to 3D DEM;
+# 2.  Particle orientation and rotation are fully considered and implemented, in which the possibility
+#     for modeling nonspherical particles is reserved;
+# 3.  Wall (geometry in DEM) element is implemented, particle-wall contact is solved;
+# 4.  Complex DEM contact models are implemented including a bond model (Edinburgh Bonded Particle Model, EBPM)
+#     and a granular contact model (Hertz-Mindlin Contact Model);
+# 5.  As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates;
+# 6.  As a bond model is implemented, particle breakage can be simulated;
+# 7.  Material properties are associated with particles / walls to reduce the space cost;
+# 8.  Surface interaction properties are associated with contacts to reduce the space cost;
+# 9.  Spatial hash table is implemented based on Morton code for neighboring search (broad phase collision
+#     detection);
+# 10. Neighboring pairs are stored to reduce the divergence within the kernel and thus increase the efficiency
+#     of parallel computing, in which bit table and parallel scan algorithm are adopted for low and high
+#     workloads respectively;
+# 11. Contacts are stored via the dynamic list linked to each particle to reduce the space cost, and the list
+#     is maintained (including appending and removing contacts) during every time step;
 #
 # Demos
 # 1. Carom billiards
