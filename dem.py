@@ -88,10 +88,10 @@
 # set_domain_max = Vector3(200.0, 200.0, 90.0)
 # set_init_particles = "Resources/bunny.p4p"
 # set_wall_normal = Vector3(0.0, 0.0, -1.0)
-# set_wall_distance = 1.0
+# set_wall_distance = 25.0
 # set_max_coordinate_number = 64
 # DEMSolverConfig.dt = 2.63e-5
-# DEMSolverConfig.target_time = 5.0
+# DEMSolverConfig.target_time = 10.0
 # DEMSolverConfig.saving_interval_time = 0.05
 # DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
 
@@ -104,7 +104,7 @@ import numpy as np
 import time
 
 # Init taichi context
-# Device memory size is recommended to be 75% of the GPU VRAM
+# Device memory size is recommended to be 75% of your GPU VRAM
 ti.init(arch=ti.gpu, device_memory_GB=6, debug=False)
 
 #=====================================
@@ -139,7 +139,7 @@ set_particle_elastic_modulus: Real = 7e10;
 set_particle_poisson_ratio: Real = 0.25;
 
 set_wall_normal: Vector3 = Vector3(0.0, 0.0, -1.0);
-set_wall_distance: Real = 1.0;
+set_wall_distance: Real = 25.0;
 set_wall_density: Real = 7800.0;
 set_wall_elastic_modulus: Real = 2e11;
 set_wall_poisson_ratio: Real = 0.25;
@@ -181,7 +181,7 @@ class DEMSolverConfig:
         self.global_damping = 0.0;
         # Time step, a global parameter
         self.dt : Real = 2.63e-5  # Larger dt might lead to unstable results.
-        self.target_time : Real = 5.0
+        self.target_time : Real = 10.0
         # No. of steps for run, a global parameter
         self.nsteps : Integer = int(self.target_time / self.dt)
         self.saving_interval_time : Real = 0.05

@@ -5,7 +5,11 @@ A complete implementation of DEM in Taichi Lang from engineering perspective.
 ![](Demos/cube_911_particles_impact/cube_911_particles_impact.gif)
 ![](Demos/cube_18112_particles_impact/cube_18112_particles_impact.gif)
 
->Visualized using BIMBase with secondary development. BIMBase is a graphical platform aimed for BIM developed by Beijing Glory PKPM Technology Co., Ltd. https://app.pkpm.cn/pbims
+>Visualized using BIMBase (TM) with secondary development. BIMBase is a graphical platform aimed for BIM developed by Beijing Glory PKPM Technology Co., Ltd. https://app.pkpm.cn/pbims
+
+![](Demos/bunny/bunny.gif)
+
+>Visualized using Houdini (TM). Houdini (TM) is an effect software with flexible workflows which are friendly to users. https://www.sidefx.com/products/houdini/
 
 ## Authors
 Denver Pilphis (Di Peng) - DEM theory and implementation
@@ -63,6 +67,13 @@ This demo is similar to the one above, with the only difference of particle numb
 This could be a good example of benchmark on large system simulation.
 
 ![](Demos/cube_18112_particles_impact/cube_18112_particles_impact.gif)
+
+### Stanford bunny free fall
+This demo contains a Stanford bunny falling in gravity and hitting on the flat surface.
+The breakage of the bunny is demonstrated.
+This could be a good example of benchmark on large system simulation.
+
+![](Demos/bunny/bunny.gif)
 
 ## Acknowledgements
 Dr. Xizhong Chen from Department of Chemical and Biological Engineering,
