@@ -5,7 +5,7 @@ A complete implementation of DEM in Taichi Lang from engineering perspective.
 ![](Demos/cube_911_particles_impact/cube_911_particles_impact.gif)
 ![](Demos/cube_18112_particles_impact/cube_18112_particles_impact.gif)
 
->Visualized using BIMBase (TM) with secondary development. BIMBase is a graphical platform aimed for BIM developed by Beijing Glory PKPM Technology Co., Ltd. https://app.pkpm.cn/pbims
+>Visualized using BIMBase (TM) with secondary development. BIMBase (TM) is a graphical platform aimed for BIM developed by Beijing Glory PKPM Technology Co., Ltd. https://app.pkpm.cn/pbims
 
 ![](Demos/bunny/bunny.gif)
 
