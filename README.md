@@ -69,7 +69,7 @@ This could be a good example of benchmark on large system simulation.
 ![](Demos/cube_18112_particles_impact/cube_18112_particles_impact.gif)
 
 ### Stanford bunny free fall
-This demo contains a Stanford bunny shaped bonded agglomerate falling in gravity and hitting on the flat surface.
+This demo contains a Stanford bunny shaped bonded agglomerate falling in gravity and hitting on the horizontal surface.
 The breakage of the bunny is demonstrated.
 This could be a good example of benchmark on large system simulation.
 
