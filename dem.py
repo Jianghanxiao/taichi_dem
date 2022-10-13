@@ -96,12 +96,8 @@
 # DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
 
 
-from math import pi
 import taichi as ti
 import taichi.math as tm
-import os
-import numpy as np
-import time
 
 # Init taichi context
 # Device memory size is recommended to be 75% of your GPU VRAM
@@ -197,13 +193,13 @@ class DEMSolverStatistics:
 
         def tick(self):
             ti.sync()
-            if(self.on == False): 
-                self.start = time.time()
-                self.on = True
-            else:
-                if(self.first): self.first = False
-                else: self.total += time.time() - self.start
-                self.on = False
+            # if(self.on == False): 
+            #     self.start = time.time()
+            #     self.on = True
+            # else:
+            #     if(self.first): self.first = False
+            #     else: self.total += time.time() - self.start
+            #     self.on = False
         
         def __str__(self):
             return str(self.total)
@@ -243,9 +239,6 @@ class DEMSolverStatistics:
 #=====================================
 # Utils
 #=====================================
-def np2csv(name,data):
-    np.savetxt(name + ".csv", data, delimiter=",")
-
 def cal_neighbor_search_radius(max_radius):
     return max_radius * set_particle_contact_radius_multiplier * (1.0 + set_bond_tensile_strength / set_bond_elastic_modulus) * set_neiboring_search_safety_factor
 
@@ -471,24 +464,11 @@ class BPCD:
         if(self.statistics!=None):self.statistics.HashTableSetupTime.tick()
         self._setup_collision(positions)
         if(self.statistics!=None):self.statistics.HashTableSetupTime.tick()
-
-        # np_count = self.hash_table.count.to_numpy()
-        # np_offset = self.hash_table.offset.to_numpy()
-        # print(np_count)
-        # print(np_offset) 
-        
+ 
         if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
         self.pse.parallel_fast(self.hash_table.offset, self.hash_table.count)
-        # self.pse.serial(self.hash_table.offset, self.hash_table.count)
         if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
         
-        # print("after prefix sum")
-        # np_count = self.hash_table.count.to_numpy()
-        # np_offset = self.hash_table.offset.to_numpy()
-        # np_current = self.hash_table.current.to_numpy()
-        # print(np_count)
-        # print(np_offset)
-        # print(f'65641 - offset = {np_offset[65641]} count = {np_count[65641]} current = {np_current[65641]}') 
         self._put_particles(positions)
         
         if(self.statistics!=None):self.statistics.CollisionPairSetupTime.tick()
@@ -501,23 +481,7 @@ class BPCD:
             if(total > self.cp_list.shape[0]):
                 count = max(total, self.cp_list.shape[0] + positions.shape[0] * set_collision_pair_init_capacity_factor)
                 self._resize_cp_list(count)
-            # print("after prefix sum")
-            # print("total pair = ", total)
-            # np_count = self.hash_table.count.to_numpy()
-            # np_offset = self.hash_table.offset.to_numpy()
-            # np_current = self.hash_table.current.to_numpy()
-            # print(np_count)
-            # print(np_offset)
-            # print(f'65641 - offset = {np_offset[65641]} count = {np_count[65641]} current = {np_current[65641]}') 
             self._search_hashtable1(positions, self.cp_list)
-            # print("after solve")
-            # np_count = self.hash_table.count.to_numpy()
-            # np_offset = self.hash_table.offset.to_numpy()
-            # np_current = self.hash_table.current.to_numpy()
-            # print(np_count)
-            # print(np_offset)
-            # print(f'65641 - offset = {np_offset[65641]} count = {np_count[65641]} current = {np_current[65641]}') 
-            
         if(self.statistics!=None):self.statistics.CollisionPairSetupTime.tick()
 
     def get_collision_pair_list(self):
@@ -540,7 +504,6 @@ class BPCD:
     def _count_particles(self, position:Vector3):
         ht = ti.static(self.hash_table)
         count = ti.atomic_add(ht[self.hash_codef(position)].count, 1)
-        # if(count >= 81793): print(f"count = {count}: {position}")
     
     @ti.kernel
     def _put_particles(self, positions:ti.template()):
@@ -549,7 +512,6 @@ class BPCD:
         for i in positions:
             hash_cell = self.hash_codef(positions[i])
             loc = ti.atomic_add(ht[hash_cell].current, 1)
-            # if(ht[hash_cell].count >= 6000):print(f'offset = {ht[hash_cell].offset} count = {ht[hash_cell].count}')
             offset = ht[hash_cell].offset
             pid[offset + loc] = i
 
@@ -589,7 +551,6 @@ class BPCD:
             
             for k in ti.static(range(len(cells))):
                 hash_cell = ht[self.hash_code(cells[k])]
-                # if(hash_cell.offset + hash_cell.count > self.particle_id.shape[0]): print(f"i = {i}, cell={self.hash_code(cells[k])}, offset = {hash_cell.offset}, count={hash_cell.count}")
                 if(hash_cell.count > 0):
                     for idx in range(hash_cell.offset, hash_cell.offset + hash_cell.count):
                         pid = self.particle_id[idx]
@@ -625,7 +586,6 @@ class BPCD:
             
             for k in ti.static(range(len(cells))):
                 hash_cell = ht[self.hash_code(cells[k])]
-                # if(hash_cell.offset + hash_cell.count > self.particle_id.shape[0]): print(f"i = {i}, cell={self.hash_code(cells[k])}, offset = {hash_cell.offset}, count={hash_cell.count}")
                 if(hash_cell.count > 0):
                     for idx in range(hash_cell.offset, hash_cell.offset + hash_cell.count):
                         pid = self.particle_id[idx]
@@ -644,13 +604,10 @@ class BPCD:
     @ti.kernel
     def _setup_collision(self, positions:ti.template()):
         ht = ti.static(self.hash_table)
-        # self.collision_count.fill(0)
         for i in ht: 
             self._clear_hash_cell(i)
         for i in positions: 
             self._count_particles(positions[i])
-        # for i in ht: 
-        #     self._fill_hash_cell(i)
     
     @ti.kernel
     def _solve_collision(self, 
@@ -684,15 +641,10 @@ class BPCD:
             
             for k in ti.static(range(len(cells))):
                 hash_cell = ht[self.hash_code(cells[k])]
-                # if(hash_cell.offset + hash_cell.count > self.particle_id.shape[0]): print(f"i = {i}, cell={self.hash_code(cells[k])}, offset = {hash_cell.offset}, count={hash_cell.count}")
                 if(hash_cell.count > 0):
                     for idx in range(hash_cell.offset, hash_cell.offset + hash_cell.count):
                         pid = self.particle_id[idx]
-                        # other_o = positions[pid]
-                        # other_r = radius[pid]
-                        if(pid > i 
-                        # and tm.distance(o,other_o) <= r + other_r
-                        ): 
+                        if(pid > i): 
                             collision_resolve_callback(i, pid)
 
 
@@ -706,12 +658,7 @@ class BPCD:
         collision_resolve_callback: func(i:ti.i32, j:ti.i32) -> None
         '''
         for i in range(positions.shape[0]):
-            # o = positions[i]
-            # r = bounding_sphere_radius[i]
             for j in range(i+1, positions.shape[0]):
-                # other_o = positions[j]
-                # other_r = bounding_sphere_radius[j]
-                # if(tm.distance(o,other_o) <= r + other_r):
                 collision_resolve_callback(i, j)
 
 
@@ -923,7 +870,6 @@ class DEMSolver:
             while(True):
                 solver.save_single(p4p, p4c, elapsed_time)
         '''
-        tk1 = time.time()
         # P4P file for particles
         n = self.gf.shape[0]
         ccache = ["TIMESTEP  PARTICLES\n",
@@ -933,8 +879,6 @@ class DEMSolver:
         np_ID = self.gf.ID.to_numpy()
         np_materialType = self.gf.materialType.to_numpy()
         np_radius = self.gf.radius.to_numpy()
-        #np_mass = self.gf.mass.to_numpy()
-        #np_density = self.gf.density.to_numpy()
         np_position = self.gf.position.to_numpy()
         np_velocity = self.gf.velocity.to_numpy()
 
@@ -943,7 +887,7 @@ class DEMSolver:
             # GROUP omitted
             group : int = 0
             ID : int = np_ID[i]
-            volume : float = 4.0 / 3.0 * pi * np_radius[i] ** 3;
+            volume : float = 4.0 / 3.0 * tm.pi * np_radius[i] ** 3;
             mass : float = volume * np_density[np_materialType[i]]
             px : float = np_position[i][0]
             py : float = np_position[i][1]
@@ -989,8 +933,6 @@ class DEMSolver:
             p4cfile.write(line)
         for line in ccache: # Include the title line
             p4cfile.write(line);
-        tk2 = time.time()
-        print(f"save time cost = {tk2 - tk1}")
 
 
     def check_workload(self, n):
@@ -1020,14 +962,16 @@ class DEMSolver:
         line = fp.readline() # "ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ" line
         # Processing particles
         max_radius = 0.0
-        np_ID = np.zeros(n, int)
-        np_density = np.zeros(n, float)
-        np_mass = np.zeros(n, float)
-        np_radius = np.zeros(n, float)
-        np_position = np.zeros((n,3))
-        np_velocity = np.zeros((n,3))
-        np_mass = np.zeros(n, float)
-        np_inertia = np.zeros((n,3,3))
+
+        np_ID = self.gf.ID.to_numpy()
+        density_field = ti.field(ti.f32, shape = n)
+        np_density = density_field.to_numpy()
+        mass_field = ti.field(ti.f32, shape = n)
+        np_mass = mass_field.to_numpy()
+        np_radius = self.gf.radius.to_numpy()
+        np_position = self.gf.position.to_numpy()
+        np_velocity = self.gf.velocity.to_numpy()
+        np_inertia = self.gf.inertia.to_numpy()
 
         # Extract density, hard coding
         material_density: float = 0.0;
@@ -1812,12 +1756,6 @@ class DEMSolver:
         self.bond()
 
 
-#======================================================================
-# basic setup
-#======================================================================
-SAVE_FRAMES = True
-VISUALIZE = False
-window_size = 1024  # Number of pixels of the window
 #=======================================================================
 # entrance
 #=======================================================================
@@ -1825,55 +1763,24 @@ if __name__ == '__main__':
     config = DEMSolverConfig()
     # Disable simulation benchmark
     statistics = None
-    # statistics = DEMSolverStatistics()
-    solver = DEMSolver(config, statistics, WorkloadType.Heavy)
+    solver = DEMSolver(config, statistics, WorkloadType.Auto)
     domain_min = set_domain_min
     domain_max = set_domain_max
     solver.init_particle_fields(set_init_particles,domain_min,domain_max)
     print(f"hash table size = {solver.bpcd.hash_table.shape[0]}, cell_size = {solver.bpcd.cell_size}")
     
-    tstart = time.time()
-    
     step = 0
     elapsed_time = 0.0
     solver.init_simulation()
-    if VISUALIZE:
-        if SAVE_FRAMES: os.makedirs('output', exist_ok=True)
-        gui = ti.GUI('Taichi DEM', (window_size, window_size))
-        while gui.running and step < config.nsteps:
-            for _ in range(100):
-                step+=1 
-                solver.run_simulation()
-            pos = solver.gf.position.to_numpy()
-            r = solver.gf.radius.to_numpy() * window_size
-            gui.circles(pos[:,(0,1)] + np.array([0.5,0.55]), radius=r)
-            # gui.circles(pos[:,(0,2)] + np.array([0.5,0.45]), radius=r)
-            gui.line(np.array([solver.wf[0].distance, 0.3]) + 0.5, np.array([solver.wf[0].distance, -0.3]) + 0.5) # Denver Pilphis: hard coding - only one wall in this example
-            if(SAVE_FRAMES):
-                gui.show(f'output/{step:07d}.png')
-            else:
-                gui.show()
-    else: # offline
-        # solver.save('output', 0)
-        p4p = open('output.p4p',encoding="UTF-8",mode='w')
-        p4c = open('output.p4c',encoding="UTF-8",mode='w')
-        solver.save_single(p4p,p4c,solver.config.dt * step)
-        # solver.save(f'output_data/{step}', elapsed_time)
-        while step < config.nsteps:
-            t1 = time.time()
-            for _ in range(config.saving_interval_steps): 
-                step += 1
-                elapsed_time += config.dt
-                solver.run_simulation()
-            t2 = time.time()
-            #solver.save_single(p4p,p4c,solver.config.dt * step)
-            print('>>>')
-            print(f"solved steps: {step} last-{config.saving_interval_steps}-sim: {t2-t1}s")
-            solver.save_single(p4p, p4c, solver.config.dt * step)
-            # solver.save(f'output_data/{step}', elapsed_time)
-            if(solver.statistics): solver.statistics.report()
-            print('<<<')
-        p4p.close()
-        p4c.close()
-    tend = time.time()
-    print(f"total solve time = {tend - tstart}")
+    p4p = open('output.p4p',encoding="UTF-8",mode='w')
+    p4c = open('output.p4c',encoding="UTF-8",mode='w')
+    solver.save_single(p4p,p4c,solver.config.dt * step)
+    while step < config.nsteps:
+        for _ in range(config.saving_interval_steps): 
+            step += 1
+            elapsed_time += config.dt
+            solver.run_simulation()
+        print(f"solved steps: {step} / {config.nsteps}({step/config.nsteps * 100}%)")
+        solver.save_single(p4p, p4c, solver.config.dt * step)
+    p4p.close()
+    p4c.close()
