@@ -9,6 +9,8 @@ A complete implementation of DEM in Taichi Lang from engineering perspective.
 
 ![](Demos/bunny/bunny.gif)
 
+![](Demos/soft_bunny/soft_bunny.gif)
+
 >Visualized using Houdini (TM). Houdini (TM) is an effect software with flexible workflows which are friendly to users. https://www.sidefx.com/products/houdini/
 
 ## Authors
@@ -74,6 +76,16 @@ The breakage of the bunny is demonstrated.
 This could be a good example of benchmark on large system simulation.
 
 ![](Demos/bunny/bunny.gif)
+
+### Soft Stanford bunny free fall
+This demo contains a Stanford bunny shaped bonded agglomerate falling
+in gravity and hitting on the flat surface.
+The bunny will not break as the strength of the bond is extremely high;
+instead, the bunny will experience a very soft mechanical behavior
+as the elastic modulus of the bond is relatively low.
+This could be a good example of comparison to the demo above.
+
+![](Demos/soft_bunny/soft_bunny.gif)
 
 ## Acknowledgements
 Dr. Xizhong Chen from Department of Chemical and Biological Engineering,
