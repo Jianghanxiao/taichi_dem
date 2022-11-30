@@ -4,3 +4,4 @@ specimen/x64
 output*
 build/
 backup/
+__pycache__/
