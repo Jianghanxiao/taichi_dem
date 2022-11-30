@@ -157,23 +157,33 @@ set_domain_max: Vector3 = Vector3(200.0, 200.0, 90.0)
 
 set_init_particles: str = "Resources/bunny.p4p"
 
-set_particle_contact_radius_multiplier: Real = 1.1;
+set_particle_contact_radius_multiplier: Real = 2.0; # Only for Taichi Hackathon 2022 specimen
 set_neiboring_search_safety_factor: Real = 1.01;
 set_particle_elastic_modulus: Real = 7e10;
 set_particle_poisson_ratio: Real = 0.25;
 
-set_wall_normal: Vector3 = Vector3(0.0, 0.0, -1.0);
-set_wall_distance: Real = 25.0;
+set_wall_normal: Vector3 = Vector3(0.0, -1.0, 0.0);
+set_wall_distance: Real = 516.0;
 set_wall_density: Real = 7800.0;
 set_wall_elastic_modulus: Real = 2e11;
 set_wall_poisson_ratio: Real = 0.25;
 
 set_bond_radius_ratio: Real = 0.5;
-set_bond_elastic_modulus: Real = 28e9;
-set_bond_poission_ratio: Real = 0.2;
-set_bond_compressive_strength: Real = 3e8;
-set_bond_tensile_strength: Real = 6e7;
-set_bond_shear_strength: Real = 6e7;
+set_bond_elastic_modulus: Real = 1e7;
+set_bond_poission_ratio: Real = 0.25;
+set_bond_compressive_strength: Real = 1e8;
+set_bond_tensile_strength: Real = 1e8;
+set_bond_shear_strength: Real = 1e8;
+
+# Taichi Hackathon 2022 append
+# Particle-wall bonds have very high strength
+# to fix the specimen to the wall
+set_pw_bond_radius_ratio: Real = 1.0;
+set_pw_bond_elastic_modulus: Real = 1e10;
+set_pw_bond_poission_ratio: Real = 0.25;
+set_pw_bond_compressive_strength: Real = 1e10;
+set_pw_bond_tensile_strength: Real = 1e10;
+set_pw_bond_shear_strength: Real = 1e10;
 
 set_pp_coefficient_friction: Real = 0.3;
 set_pp_coefficient_restitution: Real = 0.9;
@@ -738,6 +748,17 @@ class BPCD:
                 # if(tm.distance(o,other_o) <= r + other_r):
                 collision_resolve_callback(i, j)
 
+    
+    @ti.kernel
+    def wall_detect_collision(self,
+                              positions:ti.template(), 
+                              collision_resolve_callback:ti.template()):
+        '''
+        Taichi Hackathon 2022 append
+        '''
+        j = 0;
+        for i in range(positions.shape[0]):
+            collision_resolve_callback(i, j)
 
     # https://stackoverflow.com/questions/1024754/how-to-compute-a-3d-morton-number-interleave-the-bits-of-3-ints
     @ti.func
@@ -1134,10 +1155,18 @@ class DEMSolver:
         self.surf[0, 0].compressiveStrength = set_bond_compressive_strength;
         self.surf[0, 0].tensileStrength = set_bond_tensile_strength;
         self.surf[0, 0].shearStrength = set_bond_shear_strength;
-        # Particle-wall, only Hertz-Mindlin model parameters
+        # Particle-wall, EBPM is activated for Taichi Hackathon 2022
+        # HM
         self.surf[0, 1].coefficientFriction = set_pw_coefficient_friction;
         self.surf[0, 1].coefficientRestitution = set_pw_coefficient_restitution;
         self.surf[0, 1].coefficientRollingResistance = set_pw_coefficient_rolling_resistance;
+        # EBPM
+        self.surf[0, 1].radius_ratio = set_pw_bond_radius_ratio;
+        self.surf[0, 1].elasticModulus = set_pw_bond_elastic_modulus;
+        self.surf[0, 1].poissonRatio = set_pw_bond_poission_ratio;
+        self.surf[0, 1].compressiveStrength = set_pw_bond_compressive_strength;
+        self.surf[0, 1].tensileStrength = set_pw_bond_tensile_strength;
+        self.surf[0, 1].shearStrength = set_pw_bond_shear_strength;
         
         # Symmetric matrix for surf
         self.surf[1, 0] = self.surf[0, 1];
@@ -1271,6 +1300,9 @@ class DEMSolver:
             type_i = gf[i].materialType;
             gf[i].force += mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3 * g;
             gf[i].moment += Vector3(0.0, 0.0, 0.0)
+
+        # Taichi Hackathon 2022 append
+        # TODO: time sequence force series input
 
         # GLOBAL damping
         '''
@@ -1595,7 +1627,8 @@ class DEMSolver:
     def evaluate_wall(self, i : Integer, j : Integer): # i is particle, j is wall
         '''
         Particle-wall contact evaluation
-        Contact model is Hertz-Mindlin
+        In Taichi Hackathon 2022, the particle-wall contact model switches to EBPM + Hertz-Mindlin
+        in which particle-wall bonds never break, controlled by proper parameters
         '''
         
         # alias
@@ -1625,82 +1658,155 @@ class DEMSolver:
             vx = DEMMatrix([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
             rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
 
-        # Calculation relative translational and rotational displacements
         distance = tm.dot(gf[i].position, wf[j].normal) - wf[j].distance # Distance < 0 means that particle is beneath the plane
-        gap = ti.abs(distance) - gf[i].radius # gap must be negative
-        delta_n = ti.abs(gap) # For parameter calculation only
+        length = ti.abs(distance);
 
-        # For debug only
-        # if (delta_n > 0.05 * gf[i].radius):
-        #     print("WARNING: Overlap particle-wall exceeds 0.05");
+        if (wcf[i, j].isBonded): # EBPM
+            wcf[i, j].position = gf[i].position - 0.5 * distance * wf[j].normal;
+            disp_a = rotationMatrix @ gf[i].velocity * dt
+            disp_b = Vector3(0.0, 0.0, 0.0); # Wall is fixed
+            rot_a = rotationMatrix @ gf[i].omega * dt
+            rot_b = Vector3(0.0, 0.0, 0.0); # Wall is fixed
 
-        r_i = - distance * wf[j].normal / ti.abs(distance) * (ti.abs(distance) + delta_n / 2.0)
-        wcf[i, j].position = gf[i].position + r_i
-        # Velocity of a point on the surface of a rigid body
-        v_c_i = tm.cross(gf[i].omega, r_i) + gf[i].velocity
-        v_c = rotationMatrix @ (- v_c_i) # LOCAL coordinate
-        # Parameter calculation
-        # Reference: https://www.cfdem.com/media/DEM/docu/gran_model_hertz.html
-        type_i: Integer = gf[i].materialType;
-        type_j: Integer = wf[j].materialType;
-        Y_star = 1.0 / ((1.0 - mf[type_i].poissonRatio ** 2) / mf[type_i].elasticModulus + (1.0 - mf[type_j].poissonRatio ** 2) / mf[type_j].elasticModulus)
-        G_star = 1.0 / (2.0 * (2.0 - mf[type_i].poissonRatio) * (1.0 + mf[type_i].poissonRatio) / mf[type_i].elasticModulus + 2.0 * (2.0 - mf[type_j].poissonRatio) * (1.0 + mf[type_j].poissonRatio) / mf[type_j].elasticModulus)
-        R_star = gf[i].radius
-        m_star = mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3;
-        beta = tm.log(surf[type_i, type_j].coefficientRestitution) / tm.sqrt(tm.log(surf[type_i, type_j].coefficientRestitution) ** 2 + tm.pi ** 2)
-        S_n = 2.0 * Y_star * tm.sqrt(R_star * delta_n)
-        S_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
-        k_n  = 4.0 / 3.0 * Y_star * tm.sqrt(R_star * delta_n)
-        gamma_n = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_n * m_star) # Check whether gamma_n >= 0
-        k_t = 8.0 * G_star * tm.sqrt(R_star * delta_n)
-        gamma_t = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_t * m_star) # Check whether gamma_t >= 0
+            type_i: Integer = gf[i].materialType;
+            type_j: Integer = wf[j].materialType;
+            r_b = surf[type_i, type_j].radius_ratio * gf[i].radius
+            L_b = length
+            E_b = surf[type_i, type_j].elasticModulus
+            nu = surf[type_i, type_j].poissonRatio
+            I_b = (r_b ** 4) * tm.pi / 4.0
+            phi = 20.0 / 3.0 * (r_b ** 2) / (L_b ** 2) * (1.0 + nu)
+            A_b = tm.pi * (r_b ** 2)
+            k1 = E_b * A_b / L_b
+            k2 = 12.0 * E_b * I_b / (L_b ** 3) / (1.0 + phi)
+            k3 = 6.0 * E_b * I_b / (L_b ** 2) / (1.0 + phi)
+            k4 = E_b * I_b / L_b / (1.0 + nu)
+            k5 = E_b * I_b * (4.0 + phi) / L_b / (1.0 + phi)
+            k6 = E_b * I_b * (2.0 - phi) / L_b / (1.0 + phi)
+            inc_force_a = Vector3(
+                k1 * (disp_a[0] - disp_b[0]),
+                k2 * (disp_a[1] - disp_b[1]) + k3 * (rot_a[2] + rot_b[2]),
+                k2 * (disp_a[2] - disp_b[2]) - k3 * (rot_a[1] + rot_b[1])
+            )
+            inc_moment_a = Vector3(
+                k4 * (rot_a[0] - rot_b[0]),
+                k3 * (disp_b[2] - disp_a[2]) + k5 * rot_a[1] + k6 * rot_b[1],
+                k3 * (disp_a[1] - disp_b[1]) + k5 * rot_a[2] + k6 * rot_b[2]
+            )
+            # No need to calculate inc_force_b as inc_force_b == - inc_force_a and force_b == - force_a
+            inc_moment_b = Vector3(
+                k4 * (rot_b[0] - rot_a[0]),
+                k3 * (disp_b[2] - disp_a[2]) + k6 * rot_a[1] + k5 * rot_b[1],
+                k3 * (disp_a[1] - disp_b[1]) + k6 * rot_a[2] + k5 * rot_b[2]
+            )
+                            
+            wcf[i, j].force_a += inc_force_a
+            wcf[i, j].moment_a += inc_moment_a
+            force_b = - wcf[i, j].force_a
+            wcf[i, j].moment_b += inc_moment_b
 
-        # Shear displacement increments
-        shear_increment  = v_c * dt
-        shear_increment[0] = 0.0 # Remove the normal direction
-        wcf[i, j].shear_displacement += shear_increment
-        # Normal direction - LOCAL - the force towards the wall
-        F = Vector3(0.0, 0.0, 0.0)
-        # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
-        # https://doi.org/10.1002/nme.6568
-        # Eq. (29)
-        # Be aware of signs
-        F[0] = - k_n * gap - gamma_n * v_c[0]
-        # Shear direction - LOCAL - the force towards the wall
-        try_shear_force = - k_t * wcf[i, j].shear_displacement
-        if (tm.length(try_shear_force) >= surf[type_i, type_j].coefficientFriction * F[0]): # Sliding
-            ratio = surf[type_i, type_j].coefficientFriction * F[0] / tm.length(try_shear_force)
-            F[1] = try_shear_force[1] * ratio
-            F[2] = try_shear_force[2] * ratio
-            wcf[i, j].shear_displacement[1] = F[1] / k_t
-            wcf[i, j].shear_displacement[2] = F[2] / k_t
-        else: # No sliding
-            F[1] = try_shear_force[1] - gamma_t * v_c[1]
-            F[2] = try_shear_force[2] - gamma_t * v_c[2]
+            # Check whether the bond fails
+            sigma_c_a = force_b[0] / A_b - r_b / I_b * tm.sqrt(wcf[i, j].moment_a[1] ** 2 + wcf[i, j].moment_a[2] ** 2)
+            sigma_c_b = force_b[0] / A_b - r_b / I_b * tm.sqrt(wcf[i, j].moment_b[1] ** 2 + wcf[i, j].moment_b[2] ** 2)
+            sigma_c_max = -tm.min(sigma_c_a, sigma_c_b)
+            sigma_t_a = sigma_c_a
+            sigma_t_b = sigma_c_b
+            sigma_t_max = tm.max(sigma_t_a, sigma_t_b)
+            tau_max = ti.abs(wcf[i, j].moment_a[0]) * r_b / 2.0 / I_b + 4.0 / 3.0 / A_b * tm.sqrt(wcf[i, j].force_a[1] ** 2 + wcf[i, j].force_a[2] ** 2)
+            if (sigma_c_max >= surf[type_i, type_j].compressiveStrength): # Compressive failure
+                wcf[i, j].isBonded = 0
+                wcf[i, j].isActive = 0
+            elif (sigma_t_max >= surf[type_i, type_j].tensileStrength): # Tensile failure
+                wcf[i, j].isBonded = 0
+                wcf[i, j].isActive = 0
+            elif (tau_max >= surf[type_i, type_j].shearStrength): # Shear failure
+                wcf[i, j].isBonded = 0
+                wcf[i, j].isActive = 0
+            else:   # Intact bond, need to conduct force to particles
+                    # Notice the inverse of signs due to Newton's third law
+                    # and LOCAL to GLOBAL coordinates
+                ti.atomic_add(gf[i].force, ti.Matrix.inverse(rotationMatrix) @ (-wcf[i, j].force_a))
+                # ti.atomic_add(gf[j].force, ti.Matrix.inverse(rotationMatrix) @ (-force_b))
+                ti.atomic_add(gf[i].moment, ti.Matrix.inverse(rotationMatrix) @ (-wcf[i, j].moment_a))
+                # ti.atomic_add(gf[j].moment, ti.Matrix.inverse(rotationMatrix) @ (-wcf[i, j].moment_b))
+
+        else: # Hertz-Mindlin
+            # Calculation relative translational and rotational displacements
+            gap = ti.abs(distance) - gf[i].radius # gap must be negative
+            delta_n = ti.abs(gap) # For parameter calculation only
+
+            # For debug only
+            # if (delta_n > 0.05 * gf[i].radius):
+            #     print("WARNING: Overlap particle-wall exceeds 0.05");
+
+            r_i = - distance * wf[j].normal / ti.abs(distance) * (ti.abs(distance) + delta_n / 2.0)
+            wcf[i, j].position = gf[i].position + r_i
+            # Velocity of a point on the surface of a rigid body
+            v_c_i = tm.cross(gf[i].omega, r_i) + gf[i].velocity
+            v_c = rotationMatrix @ (- v_c_i) # LOCAL coordinate
+            # Parameter calculation
+            # Reference: https://www.cfdem.com/media/DEM/docu/gran_model_hertz.html
+            type_i: Integer = gf[i].materialType;
+            type_j: Integer = wf[j].materialType;
+            Y_star = 1.0 / ((1.0 - mf[type_i].poissonRatio ** 2) / mf[type_i].elasticModulus + (1.0 - mf[type_j].poissonRatio ** 2) / mf[type_j].elasticModulus)
+            G_star = 1.0 / (2.0 * (2.0 - mf[type_i].poissonRatio) * (1.0 + mf[type_i].poissonRatio) / mf[type_i].elasticModulus + 2.0 * (2.0 - mf[type_j].poissonRatio) * (1.0 + mf[type_j].poissonRatio) / mf[type_j].elasticModulus)
+            R_star = gf[i].radius
+            m_star = mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3;
+            beta = tm.log(surf[type_i, type_j].coefficientRestitution) / tm.sqrt(tm.log(surf[type_i, type_j].coefficientRestitution) ** 2 + tm.pi ** 2)
+            S_n = 2.0 * Y_star * tm.sqrt(R_star * delta_n)
+            S_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
+            k_n  = 4.0 / 3.0 * Y_star * tm.sqrt(R_star * delta_n)
+            gamma_n = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_n * m_star) # Check whether gamma_n >= 0
+            k_t = 8.0 * G_star * tm.sqrt(R_star * delta_n)
+            gamma_t = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_t * m_star) # Check whether gamma_t >= 0
+
+            # Shear displacement increments
+            shear_increment  = v_c * dt
+            shear_increment[0] = 0.0 # Remove the normal direction
+            wcf[i, j].shear_displacement += shear_increment
+            # Normal direction - LOCAL - the force towards the wall
+            F = Vector3(0.0, 0.0, 0.0)
+            # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
+            # https://doi.org/10.1002/nme.6568
+            # Eq. (29)
+            # Be aware of signs
+            F[0] = - k_n * gap - gamma_n * v_c[0]
+            # Shear direction - LOCAL - the force towards the wall
+            try_shear_force = - k_t * wcf[i, j].shear_displacement
+            if (tm.length(try_shear_force) >= surf[type_i, type_j].coefficientFriction * F[0]): # Sliding
+                ratio = surf[type_i, type_j].coefficientFriction * F[0] / tm.length(try_shear_force)
+                F[1] = try_shear_force[1] * ratio
+                F[2] = try_shear_force[2] * ratio
+                wcf[i, j].shear_displacement[1] = F[1] / k_t
+                wcf[i, j].shear_displacement[2] = F[2] / k_t
+            else: # No sliding
+                F[1] = try_shear_force[1] - gamma_t * v_c[1]
+                F[2] = try_shear_force[2] - gamma_t * v_c[2]
             
-        # No moment is conducted in Hertz-Mindlin model
+            # No moment is conducted in Hertz-Mindlin model
         
-        # For P4C output
-        wcf[i, j].force_a = F;
-        # wcf[i, j].force_b = -F;
-        # Assigning contact force to particles
-        # Notice the inverse of signs due to Newton's third law
-        # and LOCAL to GLOBAL coordinates
-        # As the force is at contact position
-        # additional moments will be assigned to particles
-        F_i_global = ti.Matrix.inverse(rotationMatrix) @ (-F)
+            # For P4C output
+            wcf[i, j].force_a = F;
+            # wcf[i, j].force_b = -F;
+            # Assigning contact force to particles
+            # Notice the inverse of signs due to Newton's third law
+            # and LOCAL to GLOBAL coordinates
+            # As the force is at contact position
+            # additional moments will be assigned to particles
+            F_i_global = ti.Matrix.inverse(rotationMatrix) @ (-F)
         
-        ti.atomic_add(gf[i].force, F_i_global)
-        # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
-        # https://doi.org/10.1002/nme.6568
-        # Eqs. (3)-(4)
-        ti.atomic_add(gf[i].moment, tm.cross(r_i, F_i_global))
+            ti.atomic_add(gf[i].force, F_i_global)
+            # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
+            # https://doi.org/10.1002/nme.6568
+            # Eqs. (3)-(4)
+            ti.atomic_add(gf[i].moment, tm.cross(r_i, F_i_global))
 
 
     @ti.kernel
     def resolve_wall(self):
         '''
         Particle-wall contact detection
+        Modified for 2022 Taichi Hackathon 2022
         '''
         
         #alias
@@ -1712,10 +1818,13 @@ class DEMSolver:
         for i, j in ti.ndrange(gf.shape[0], wf.shape[0]):
                 # Particle-wall contacts
                 if (wcf[i, j].isActive): # Existing contact
-                    if (ti.abs(tm.dot(gf[i].position, wf[j].normal) - wf[j].distance) >= gf[i].radius): # Non-contact
-                        wcf[i, j].isActive = 0
-                    else: # Contact
-                        self.evaluate_wall(i, j)
+                    if (wcf[i, j].isBonded): # Bonded contact
+                        self.evaluate_wall(i, j);
+                    else:
+                        if (ti.abs(tm.dot(gf[i].position, wf[j].normal) - wf[j].distance) >= gf[i].radius): # Non-contact
+                            wcf[i, j].isActive = 0
+                        else: # Contact
+                            self.evaluate_wall(i, j)
                 else:
                     if (ti.abs(tm.dot(gf[i].position, wf[j].normal) - wf[j].distance) < gf[i].radius): # Contact
                         wcf[i, j] = Contact( # Hertz-Mindlin model
@@ -1758,16 +1867,51 @@ class DEMSolver:
             else:
                 print(f"ERROR: coordinate number > set_max_coordinate_number({set_max_coordinate_number})")
 
+    @ti.func 
+    def bond_detect_wall(self, i:Integer, j:Integer): # i - particle, j - wall
+        '''
+        Taichi Hackathon 2022 append
+        Using CONTACT RADIUS of the spheres
+        To determine whether a bond is assigned between particle and a wall
+        '''
+        #alias        
+        gf = ti.static(self.gf)
+        wcf = ti.static(self.wcf)
+        wf = ti.static(self.wf)
+        
+        contact_radius_i = gf[i].contactRadius;
+        contact_radius_j = 0.0;
+        # Distance d = Ax + By + Cz - D
+        if (ti.abs(tm.dot(gf[i].position, wf[j].normal) - wf[j].distance) - contact_radius_i - contact_radius_j < 0.0):
+            offset = self.append_contact_offset(i)
+            if(offset >= 0):
+                wcf[offset] = Contact( # Forced to bond contact
+                i = i,
+                j = j,
+                isActive = 1,
+                isBonded = 1,
+                materialType_i = 0,
+                materialType_j = 1, # Wall
+                force_a = Vector3(0.0, 0.0, 0.0),
+                moment_a = Vector3(0.0, 0.0, 0.0),
+                # force_b = Vector3(0.0, 0.0, 0.0),
+                moment_b = Vector3(0.0, 0.0, 0.0),
+                )
+            else:
+                print(f"ERROR: coordinate number > set_max_coordinate_number({set_max_coordinate_number})")
 
     def bond(self):
         '''
         Similar to contact, but runs only once at the beginning
+        Taichi Hackathon 2022 append bond_detect_wall
         '''
         # In example 911, brute detection has better efficiency
         if(self.workload_type == WorkloadType.Light):
             self.bpcd.brute_detect_collision(self.gf.position, self.bond_detect)
         else:
             self.bpcd.detect_collision(self.gf.position, self.bond_detect)
+
+        self.bpcd.wall_detect_collision(self.gf.position, self.bond_detect_wall)
 
 
     # Neighboring search

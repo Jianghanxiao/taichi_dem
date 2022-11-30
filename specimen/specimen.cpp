@@ -44,6 +44,7 @@ std::vector<cv::Point2d> getPoints()
 {
     const cv::Mat srcImage = cv::imread("out.jpg", CV_8UC1);
     // TODO
+    return std::vector<cv::Point2d>();
 }
 
 int findNearestPointIdx(const std::vector<cv::Point2d>& boundary, const cv::Point2d& pt)
@@ -94,8 +95,10 @@ void prepareSpecimen(const std::vector<cv::Point2d>& boundary)
                 B1 = boundary[min_idx] - boundary[min_idx - 1];
                 B2 = boundary[min_idx + 1] - boundary[min_idx];
             }
-
-            const Eigen::Vector2d eB1(B1), eB2(B2);
+            
+            Eigen::Vector2d eB1, eB2;
+            eB1[0] = B1.x; eB1[1] = B1.y;
+            eB2[0] = B2.x; eB2[1] = B2.y;
             Eigen::Matrix<double, 2, 2, Eigen::RowMajor> R;
             R << 0.0, 1.0,
                 -1.0, 0.0;
