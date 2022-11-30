@@ -5,7 +5,7 @@
 #include "opencv2/opencv.hpp"
 #include "Eigen/Dense"
 
-// static constexpr int numerical_grid = 5;
+static constexpr unsigned int pixel_threshold = 200;
 static constexpr double sphere_z = 0.0;
 static constexpr double sphere_radius = 1.0;
 static constexpr double sphere_density = 1000.0;
@@ -86,7 +86,7 @@ int findNearestPointIdx(const std::vector<cv::Point2f>& boundary, const cv::Poin
     return min_idx;
 }
 
-void prepareSpecimen(const std::vector<cv::Point2f>& boundary)
+std::vector<Sphere> prepareSpecimen(const std::vector<cv::Point2f>& boundary)
 {
     const cv::Rect domain = cv::boundingRect(boundary);
     std::vector<Sphere> sphList;
@@ -154,13 +154,30 @@ void prepareSpecimen(const std::vector<cv::Point2f>& boundary)
         << sphList[i].x << " " << sphList[i].y << " " << sphList[i].z
         << " 0.0 0.0 0.0" << std::endl;
     outputFile.close();
+
+    return sphList;
+}
+
+void extractBeltArea(const std::vector<Sphere>& sphList)
+{
+    cv::Mat srcImage = cv::imread(INPUT_IMAGE, CV_8UC4);
+    std::ofstream outputFile(OUTPUT_BELT, std::ios::out);
+    for (int i = 0; i < sphList.size(); ++i)
+    {
+        cv::Vec4b p = srcImage.at<cv::Vec4b>((int)sphList[i].y, (int)sphList[i].x);
+        // BGRA
+        if ((p.val[0] > pixel_threshold) && (p.val[1] > pixel_threshold) && (p.val[2] > pixel_threshold))
+            outputFile << (i + 1) << std::endl;
+    }
+    outputFile.close();
 }
 
 int main()
 {
     cv::Mat binImage= color2bit();
     std::vector<cv::Point2f> ptList = getPoints(binImage);
-    prepareSpecimen(ptList);
+    std::vector<Sphere> sphList = prepareSpecimen(ptList);
+    extractBeltArea(sphList);
     // cv::waitKey(0);
     return 0;
 }
