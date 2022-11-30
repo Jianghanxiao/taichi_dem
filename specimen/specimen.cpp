@@ -31,6 +31,7 @@ cv::Mat color2bit()
     auto type = dstImage.type();
     cv::threshold(srcImage, dstImage, 254, 255, cv::THRESH_BINARY);
     // cv::imshow("bin kunkun", dstImage);
+    cv::imwrite("fig_document.jpg", dstImage);
     return dstImage;
 }
 
