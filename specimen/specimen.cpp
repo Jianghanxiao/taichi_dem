@@ -1,6 +1,7 @@
 ﻿#include <iostream>
 #include <fstream>
 #include <vector>
+#include <algorithm>
 #include "opencv2/opencv.hpp"
 #include "Eigen/Dense"
 
@@ -20,34 +21,53 @@ public:
     };
 };
 
-void color2bit()
+cv::Mat color2bit()
 {
-    const cv::Mat srcImage = cv::imread("src.png", CV_8UC4);
+    const cv::Mat srcImage = cv::imread(INPUT_IMAGE, CV_8UC4);
+    cv::imshow("colorful kunkun", srcImage);
     cv::Mat dstImage(srcImage.size(), CV_8UC1);
-    for (int i = 0; i < srcImage.rows; ++i)
-        for (int j = 0; j < srcImage.cols; ++j)
-        {
-            const cv::Vec4b p = srcImage.at<cv::Vec4b>(i, j);
-            const uchar a = p[0], b = p[1], c = p[2], d = p[3];
-            if ((a == 255) && (b == 255) && (c == 255) && (d == 255)) // RGBA all 255 -> background white pixel
-                dstImage.at<uchar>(i, j) = (uchar)255;
-            else // else -> foreground black pixel
-                dstImage.at<uchar>(i, j) = (uchar)0;
-        }
-
-    cv::Mat outImage;
-    cv::resize(dstImage, outImage, dstImage.size() * 2);
-    cv::imwrite("out.jpg", outImage);
+    constexpr auto cv8uc1 = CV_8UC1;
+    auto type = dstImage.type();
+    cv::threshold(srcImage, dstImage, 254, 255, cv::THRESH_BINARY);
+    cv::imshow("bin kunkun", dstImage);
+    return dstImage;
 }
 
-std::vector<cv::Point2d> getPoints()
+std::vector<cv::Point2f> getPoints(const cv::Mat& binImage)
 {
-    const cv::Mat srcImage = cv::imread("out.jpg", CV_8UC1);
-    // TODO
-    return std::vector<cv::Point2d>();
+    std::vector<cv::Point2f> points;
+    //extracting the contours from the given binary image
+    std::vector<std::vector<cv::Point>> contours;
+    std::vector<cv::Vec4i> hierarchy;
+    cv::Mat srcImage(binImage.size(), CV_8UC1, cv::Scalar(0, 0, 0));
+    cv::cvtColor(binImage, srcImage, cv::COLOR_RGB2GRAY);
+    cv::findContours(srcImage, contours, hierarchy, cv::RETR_TREE, cv::CHAIN_APPROX_NONE);
+    std::cout << "Total Number of Contours found =" << contours.size() << std::endl;
+    //create new image to draw contours
+    cv::Mat contourImage(srcImage.size(), CV_8UC1, cv::Scalar(0, 0, 0));
+    //draw contours
+    cv::drawContours(contourImage, contours, -1, cv::Scalar(255, 255, 255), 2);
+    cv::imshow("Contours", contourImage);
+    points.reserve(contours[1].size());
+    auto& kunContour = contours[1];
+    for (const auto& p : contours[1])
+    {
+        points.push_back(p);
+    }
+    std::reverse(points.begin(), points.end());
+
+    cv::Mat newImage(binImage.size(), CV_8UC3, cv::Scalar(0, 0, 0));
+    // draw colored contour red to blue for contour direction
+    for (int i = 0; i < points.size(); ++i)
+    {
+        float phi = (float)i / points.size();
+        cv::circle(newImage, points[i], 0, cv::Scalar(255.0 * (1.0f - phi), 0, 255.0 * phi));
+    }
+    cv::imshow("colored contour kunkun", newImage);
+    return points;
 }
 
-int findNearestPointIdx(const std::vector<cv::Point2d>& boundary, const cv::Point2d& pt)
+int findNearestPointIdx(const std::vector<cv::Point2f>& boundary, const cv::Point2f& pt)
 {
     double min_distance = DBL_MAX;
     int min_idx = -1;
@@ -63,7 +83,7 @@ int findNearestPointIdx(const std::vector<cv::Point2d>& boundary, const cv::Poin
     return min_idx;
 }
 
-void prepareSpecimen(const std::vector<cv::Point2d>& boundary)
+void prepareSpecimen(const std::vector<cv::Point2f>& boundary)
 {
     const cv::Rect domain = cv::boundingRect(boundary);
     std::vector<Sphere> sphList;
@@ -77,9 +97,9 @@ void prepareSpecimen(const std::vector<cv::Point2d>& boundary)
 
             // X_j = [pos_x, pos_y]
             // The nearest point A_b,i to X_j, i = min_idx
-            const int min_idx = findNearestPointIdx(boundary, cv::Point2d(pos_x, pos_y));
+            const int min_idx = findNearestPointIdx(boundary, cv::Point2f(pos_x, pos_y));
             
-            cv::Point2d B1, B2;
+            cv::Point2f B1, B2;
             if (min_idx == 0) // Consider boundary conditions
             {
                 B1 = boundary[min_idx] - boundary[boundary.size() - 1];
@@ -95,10 +115,8 @@ void prepareSpecimen(const std::vector<cv::Point2d>& boundary)
                 B1 = boundary[min_idx] - boundary[min_idx - 1];
                 B2 = boundary[min_idx + 1] - boundary[min_idx];
             }
-            
-            Eigen::Vector2d eB1, eB2;
-            eB1[0] = B1.x; eB1[1] = B1.y;
-            eB2[0] = B2.x; eB2[1] = B2.y;
+
+            const Eigen::Vector2d eB1(B1.x, B1.y), eB2(B1.x, B2.y);
             Eigen::Matrix<double, 2, 2, Eigen::RowMajor> R;
             R << 0.0, 1.0,
                 -1.0, 0.0;
@@ -116,7 +134,7 @@ void prepareSpecimen(const std::vector<cv::Point2d>& boundary)
         }
     }
     
-    std::ofstream outputFile("input.p4p", std::ios::out);
+    std::ofstream outputFile(OUTPUT_P4P, std::ios::out);
     outputFile << "TIMESTEP  PARTICLES" << std::endl;
     outputFile << 0.0 << " " << sphList.size() << std::endl;
     outputFile << "ID  GROUP  VOLUME  MASS  PX  PY  PZ  VX  VY  VZ" << std::endl;
@@ -130,8 +148,9 @@ void prepareSpecimen(const std::vector<cv::Point2d>& boundary)
 
 int main()
 {
-    color2bit();
-    std::vector<cv::Point2d> ptList = getPoints();
+    cv::Mat binImage= color2bit();
+    std::vector<cv::Point2f> ptList = getPoints(binImage);
     prepareSpecimen(ptList);
+    cv::waitKey(0);
     return 0;
 }

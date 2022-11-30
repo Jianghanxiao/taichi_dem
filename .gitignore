@@ -1,3 +1,5 @@
 specimen/.vs
 specimen/x64
 output*
+build/
+backup/
