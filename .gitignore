@@ -1,4 +1,5 @@
 specimen/.vs
+specimen/out
 specimen/x64
 output*
 build/

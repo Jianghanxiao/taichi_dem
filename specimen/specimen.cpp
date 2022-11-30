@@ -5,6 +5,7 @@
 #include "opencv2/opencv.hpp"
 #include "Eigen/Dense"
 
+static constexpr int numerical_grid = 5;
 static constexpr double sphere_z = 0.0;
 static constexpr double sphere_radius = 1.0;
 static constexpr double sphere_density = 1000.0;
@@ -24,12 +25,12 @@ public:
 cv::Mat color2bit()
 {
     const cv::Mat srcImage = cv::imread(INPUT_IMAGE, CV_8UC4);
-    cv::imshow("colorful kunkun", srcImage);
+    // cv::imshow("colorful kunkun", srcImage);
     cv::Mat dstImage(srcImage.size(), CV_8UC1);
     constexpr auto cv8uc1 = CV_8UC1;
     auto type = dstImage.type();
     cv::threshold(srcImage, dstImage, 254, 255, cv::THRESH_BINARY);
-    cv::imshow("bin kunkun", dstImage);
+    // cv::imshow("bin kunkun", dstImage);
     return dstImage;
 }
 
@@ -47,7 +48,7 @@ std::vector<cv::Point2f> getPoints(const cv::Mat& binImage)
     cv::Mat contourImage(srcImage.size(), CV_8UC1, cv::Scalar(0, 0, 0));
     //draw contours
     cv::drawContours(contourImage, contours, -1, cv::Scalar(255, 255, 255), 2);
-    cv::imshow("Contours", contourImage);
+    // cv::imshow("Contours", contourImage);
     points.reserve(contours[1].size());
     auto& kunContour = contours[1];
     for (const auto& p : contours[1])
@@ -63,7 +64,8 @@ std::vector<cv::Point2f> getPoints(const cv::Mat& binImage)
         float phi = (float)i / points.size();
         cv::circle(newImage, points[i], 0, cv::Scalar(255.0 * (1.0f - phi), 0, 255.0 * phi));
     }
-    cv::imshow("colored contour kunkun", newImage);
+    // cv::imshow("colored contour kunkun", newImage);
+    
     return points;
 }
 
@@ -116,21 +118,28 @@ void prepareSpecimen(const std::vector<cv::Point2f>& boundary)
                 B2 = boundary[min_idx + 1] - boundary[min_idx];
             }
 
-            const Eigen::Vector2d eB1(B1.x, B1.y), eB2(B1.x, B2.y);
+            Eigen::Vector2d eB1, eB2;
+            eB1[0] = B1.x; eB1[1] = B1.y; eB2[0] = B2.x; eB2[1] = B2.y;
             Eigen::Matrix<double, 2, 2, Eigen::RowMajor> R;
             R << 0.0, 1.0,
                 -1.0, 0.0;
 
-            if ((R * eB1).transpose() * eB2 < 0)
+            if ((R * eB1).transpose() * eB2 <= 0) // Include the collineation scenario
+            {
                 if ((eB1[1] * (pos_x - boundary[min_idx].x) - eB1[0] * (pos_y - boundary[min_idx].y) > 0)
                     && (eB2[1] * (pos_x - boundary[min_idx].x) - eB2[0] * (pos_y - boundary[min_idx].y) > 0))
                     // X_j in A
                     sphList.emplace_back(Sphere(pos_x, pos_y, 0.0, sphere_radius));
+            }
             else if ((R * eB1).transpose() * eB2 > 0)
+            {
                 if ((eB1[1] * (pos_x - boundary[min_idx].x) - eB1[0] * (pos_y - boundary[min_idx].y) > 0)
                     || (eB2[1] * (pos_x - boundary[min_idx].x) - eB2[0] * (pos_y - boundary[min_idx].y) > 0))
                     // X_j in A
                     sphList.emplace_back(Sphere(pos_x, pos_y, sphere_z, sphere_radius));
+            }
+            // else
+            //     throw "Exception!";
         }
     }
     
@@ -151,6 +160,6 @@ int main()
     cv::Mat binImage= color2bit();
     std::vector<cv::Point2f> ptList = getPoints(binImage);
     prepareSpecimen(ptList);
-    cv::waitKey(0);
+    // cv::waitKey(0);
     return 0;
 }
