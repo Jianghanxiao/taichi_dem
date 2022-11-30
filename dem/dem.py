@@ -139,7 +139,7 @@ from BroadPhaseCollisionDetection import *
 
 # Init taichi context
 # Device memory size is recommended to be 75% of your GPU VRAM
-ti.init(arch=ti.gpu, device_memory_GB=6, debug=False)
+ti.init(arch=ti.gpu, debug=False)
 
 #=====================================
 # Environmental Variables
@@ -1247,9 +1247,7 @@ class DEMSolver:
                 moment_a = Vector3(0.0, 0.0, 0.0),
                 # force_b = Vector3(0.0, 0.0, 0.0),
                 moment_b = Vector3(0.0, 0.0, 0.0),
-                )
-            else:
-                print(f"ERROR: coordinate number > set_max_coordinate_number({set_max_coordinate_number})")
+            )
 
     def bond(self):
         '''

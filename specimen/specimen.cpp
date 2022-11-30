@@ -5,7 +5,7 @@
 #include "opencv2/opencv.hpp"
 #include "Eigen/Dense"
 
-static constexpr int numerical_grid = 5;
+// static constexpr int numerical_grid = 5;
 static constexpr double sphere_z = 0.0;
 static constexpr double sphere_radius = 1.0;
 static constexpr double sphere_density = 1000.0;
@@ -126,15 +126,15 @@ void prepareSpecimen(const std::vector<cv::Point2f>& boundary)
 
             if ((R * eB1).transpose() * eB2 <= 0) // Include the collineation scenario
             {
-                if ((eB1[1] * (pos_x - boundary[min_idx].x) - eB1[0] * (pos_y - boundary[min_idx].y) > 0)
-                    && (eB2[1] * (pos_x - boundary[min_idx].x) - eB2[0] * (pos_y - boundary[min_idx].y) > 0))
+                if ((eB1[1] * (pos_x - boundary[min_idx].x) - eB1[0] * (pos_y - boundary[min_idx].y) >= 0)
+                    && (eB2[1] * (pos_x - boundary[min_idx].x) - eB2[0] * (pos_y - boundary[min_idx].y) >= 0))
                     // X_j in A
                     sphList.emplace_back(Sphere(pos_x, pos_y, 0.0, sphere_radius));
             }
             else if ((R * eB1).transpose() * eB2 > 0)
             {
-                if ((eB1[1] * (pos_x - boundary[min_idx].x) - eB1[0] * (pos_y - boundary[min_idx].y) > 0)
-                    || (eB2[1] * (pos_x - boundary[min_idx].x) - eB2[0] * (pos_y - boundary[min_idx].y) > 0))
+                if ((eB1[1] * (pos_x - boundary[min_idx].x) - eB1[0] * (pos_y - boundary[min_idx].y) >= 0)
+                    || (eB2[1] * (pos_x - boundary[min_idx].x) - eB2[0] * (pos_y - boundary[min_idx].y) >= 0))
                     // X_j in A
                     sphList.emplace_back(Sphere(pos_x, pos_y, sphere_z, sphere_radius));
             }
