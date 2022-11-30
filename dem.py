@@ -129,7 +129,7 @@ import time
 
 # Init taichi context
 # Device memory size is recommended to be 75% of your GPU VRAM
-ti.init(arch=ti.gpu, device_memory_GB=6, debug=False)
+ti.init(arch=ti.gpu, debug=False)
 
 #=====================================
 # Type Definition
@@ -155,7 +155,7 @@ DEMMatrix = Matrix3x3
 set_domain_min: Vector3 = Vector3(-200.0, -200.0, -30.0)
 set_domain_max: Vector3 = Vector3(200.0, 200.0, 90.0)
 
-set_init_particles: str = "Resources/bunny.p4p"
+set_init_particles: str = "input.p4p"
 
 set_particle_contact_radius_multiplier: Real = 2.0; # Only for Taichi Hackathon 2022 specimen
 set_neiboring_search_safety_factor: Real = 1.01;
@@ -1883,9 +1883,7 @@ class DEMSolver:
         contact_radius_j = 0.0;
         # Distance d = Ax + By + Cz - D
         if (ti.abs(tm.dot(gf[i].position, wf[j].normal) - wf[j].distance) - contact_radius_i - contact_radius_j < 0.0):
-            offset = self.append_contact_offset(i)
-            if(offset >= 0):
-                wcf[offset] = Contact( # Forced to bond contact
+            wcf[i, j] = Contact( # Forced to bond contact
                 i = i,
                 j = j,
                 isActive = 1,
@@ -1896,9 +1894,7 @@ class DEMSolver:
                 moment_a = Vector3(0.0, 0.0, 0.0),
                 # force_b = Vector3(0.0, 0.0, 0.0),
                 moment_b = Vector3(0.0, 0.0, 0.0),
-                )
-            else:
-                print(f"ERROR: coordinate number > set_max_coordinate_number({set_max_coordinate_number})")
+            )
 
     def bond(self):
         '''
