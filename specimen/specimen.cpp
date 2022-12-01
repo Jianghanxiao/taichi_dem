@@ -5,7 +5,7 @@
 #include "opencv2/opencv.hpp"
 #include "Eigen/Dense"
 
-static constexpr unsigned int pixel_threshold = 200;
+static constexpr unsigned int pixel_threshold = 160;
 static constexpr double sphere_z = 0.0;
 static constexpr double sphere_radius = 1.0;
 static constexpr double sphere_density = 1000.0;
