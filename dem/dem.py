@@ -136,6 +136,8 @@ from Utils import *
 from DEMSolverStatistics import *
 # broad phase collision detection
 from BroadPhaseCollisionDetection import *
+# time sequence
+from TimeSequence import *
 
 # Init taichi context
 # Device memory size is recommended to be 75% of your GPU VRAM
@@ -146,6 +148,7 @@ ti.init(arch=ti.gpu, debug=False)
 #=====================================
 DoublePrecisionTolerance: float = 1e-12 # Boundary between zeros and non-zeros
 MaxParticleCount: int = 1000000000
+# MaxParticleCount: int = 100
 
 #=====================================
 # Init Data Structure
@@ -284,6 +287,7 @@ class DEMSolver:
         self.surf:ti.StructField # Surface types, n*n field: [0, 0] - particle-particle [0, 1] == [1, 0] - particle-wall [1, 1] - wall-wall (insensible)
         # Particle fields
         self.gf:ti.StructField
+        self.grainID2Index = None
         
         self.cf:ti.StructField # neighbors for every particle
         self.cfn:ti.StructField # neighbor counter for every particle
@@ -296,7 +300,8 @@ class DEMSolver:
         
         self.statistics:DEMSolverStatistics = statistics
         self.workload_type = workload
-
+        self.timeSquence = TimeSequence(set_time_sequnce_folder)
+        self.frame = 0
 
     def save(self, file_name:str, time:float):
         '''
@@ -409,6 +414,8 @@ class DEMSolver:
         self.gf = Grain.field(shape=(n))
         self.wf = Wall.field(shape = nwall)
         self.wcf = Contact.field(shape = (n,nwall))
+        self.grainID2Index = ti.field(dtype=ti.i32, shape = n)
+        
         # Denver Pilphis: hard-coding
         self.mf = Material.field(shape = 2)
         self.surf = Surface.field(shape = (2,2))
@@ -417,6 +424,7 @@ class DEMSolver:
         # Processing particles
         max_radius = 0.0
         np_ID = np.zeros(n, int)
+        np_grainID2Index = np.zeros(n, int)
         np_density = np.zeros(n, float)
         np_mass = np.zeros(n, float)
         np_radius = np.zeros(n, float)
@@ -448,6 +456,7 @@ class DEMSolver:
             radius : Real = tm.pow(volume * 3.0 / 4.0 / tm.pi, 1.0 / 3.0)
             inertia : Real = 2.0 / 5.0 * mass * radius * radius
             np_ID[i] = id
+            np_grainID2Index[id-1] = i
             # self.gf[i].density = density
             np_density[i] = density
             # self.gf[i].mass = mass
@@ -468,6 +477,7 @@ class DEMSolver:
         self.gf.contactRadius.from_numpy(np_radius * set_particle_contact_radius_multiplier)
         self.gf.position.from_numpy(np_position)
         self.gf.velocity.from_numpy(np_velocity)
+        self.grainID2Index.from_numpy(np_grainID2Index)
         self.gf.acceleration.fill(Vector3(0.0, 0.0, 0.0))
         self.gf.force.fill(Vector3(0.0, 0.0, 0.0))        
         self.gf.quaternion.fill(Vector4(1.0, 0.0, 0.0, 0.0))
@@ -523,20 +533,6 @@ class DEMSolver:
         self.surf[1, 0] = self.surf[0, 1]
 
         # surf[1, 1] is insensible
-        
-        if(self.workload_type ==  WorkloadType.Light):
-            r = cal_neighbor_search_radius(max_radius)
-            self.bpcd = BPCD.create(n, r, domain_min, domain_max, BPCD.Implicit)
-            self.bpcd.statistics = self.statistics
-        
-        if(self.workload_type ==  WorkloadType.Midium):
-            r = cal_neighbor_search_radius(max_radius)
-            self.bpcd = BPCD.create(n, r, domain_min, domain_max, BPCD.Implicit)
-            self.bpcd.statistics = self.statistics
-            u1 = ti.types.quant.int(1, False)
-            self.cp = ti.field(u1)
-            self.cn = ti.root.dense(ti.i, round32(n * n)//32).quant_array(ti.i, dimensions=32, max_num_bits=32).place(self.cp)
-        
         if(self.workload_type ==  WorkloadType.Heavy):
             r = cal_neighbor_search_radius(max_radius)
             self.bpcd = BPCD.create(n, r, domain_min, domain_max, BPCD.ExplicitCollisionPair)
@@ -580,35 +576,8 @@ class DEMSolver:
         for j in range(active_count, self.cfn[i]):
             self.cf[i * set_max_coordinate_number + j].isActive = False
         self.cfn[i] = active_count
+    
 # <<< contact field utils
-
-
-# >>> collision bit table utils
-    @ti.kernel
-    def clear_cp_bit_table(self):
-        ti.loop_config(bit_vectorize=True)
-        for i in ti.grouped(self.cp):
-            self.cp[i] = 0
-
-    @ti.func
-    def set_collision_bit_callback(self, i:ti.i32, j:ti.i32, cp:ti.template(), n:ti.template()):
-        idx = i * n + j
-        cp[idx] = 1
-
-
-    @ti.func
-    def get_collision_bit(self, i:ti.i32, j:ti.i32):
-        n = self.gf.shape[0]
-        idx = i * n + j
-        return self.cp[idx]
-
-
-    @ti.kernel
-    def cp_bit_table_resolve_collision(self):
-        size = self.gf.shape[0]
-        for i,j in ti.ndrange(size, size):
-            if(self.get_collision_bit(i,j)): self.resolve(i, j)
-# <<< collision bit table utils
 
 
 # >>> collision pair list utils
@@ -617,10 +586,8 @@ class DEMSolver:
         for i in cp_range:
             for k in range(cp_range[i].count):
                 j = cp_list[cp_range[i].offset + k]
-                self.resolve(i, j)
+                self.resolve_unbonded(i, j)
 # <<< collision pair list utils
-
-
     @ti.kernel
     def clear_state(self):
         #alias
@@ -722,8 +689,245 @@ class DEMSolver:
         # print(f"{kinematic_energy}")
 
 
+    @ti.kernel
+    def resolve_bonded(self):
+        for i in self.cfn:
+            for k in range(self.cfn[i]):
+                offset = i * set_max_coordinate_number + k
+                self.evaluate_bonded(offset)
+
+
     @ti.func
-    def resolve(self, i : Integer, j : Integer):
+    def evaluate_bonded(self, offset: Integer):
+        # Bonded, use EBPM
+        dt = self.config.dt
+        gf = ti.static(self.gf)
+        cf = ti.static(self.cf)
+        mf = ti.static(self.mf)
+        surf = ti.static(self.surf)
+        
+        i = cf[offset].i
+        j = cf[offset].j
+        
+        length = tm.length(gf[j].position - gf[i].position)
+        # Contact resolution
+        # Find out rotation matrix
+        # https://math.stackexchange.com/questions/180418/calculate-rotation-matrix-to-align-vector-a-to-vector-b-in-3d
+        a = tm.normalize(gf[j].position - gf[i].position)
+        b = Vector3(1.0, 0.0, 0.0) # Local x coordinate
+        v = tm.cross(a, b)
+        s = tm.length(v)
+        c = tm.dot(a, b)
+        rotationMatrix = Zero3x3()
+        if (s < DoublePrecisionTolerance):
+            if (c > 0.0):
+                rotationMatrix = ti.Matrix.diag(3, 1.0)
+            else:
+                rotationMatrix = Matrix3x3([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+        else:
+            vx = Matrix3x3([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+            rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
+        
+        if (cf[offset].isActive and cf[offset].isBonded):
+            cf[offset].position = 0.5 * (gf[i].position + gf[j].position)
+            disp_a = rotationMatrix @ gf[i].velocity * dt
+            disp_b = rotationMatrix @ gf[j].velocity * dt
+            rot_a = rotationMatrix @ gf[i].omega * dt
+            rot_b = rotationMatrix @ gf[j].omega * dt
+
+            type_i: Integer = gf[i].materialType
+            type_j: Integer = gf[j].materialType
+            r_b = surf[type_i, type_j].radius_ratio * tm.min(gf[i].radius, gf[j].radius)
+            L_b = length
+            E_b = surf[type_i, type_j].elasticModulus
+            nu = surf[type_i, type_j].poissonRatio
+            I_b = (r_b ** 4) * tm.pi / 4.0
+            phi = 20.0 / 3.0 * (r_b ** 2) / (L_b ** 2) * (1.0 + nu)
+            A_b = tm.pi * (r_b ** 2)
+            k1 = E_b * A_b / L_b
+            k2 = 12.0 * E_b * I_b / (L_b ** 3) / (1.0 + phi)
+            k3 = 6.0 * E_b * I_b / (L_b ** 2) / (1.0 + phi)
+            k4 = E_b * I_b / L_b / (1.0 + nu)
+            k5 = E_b * I_b * (4.0 + phi) / L_b / (1.0 + phi)
+            k6 = E_b * I_b * (2.0 - phi) / L_b / (1.0 + phi)
+            inc_force_a = Vector3(
+                k1 * (disp_a[0] - disp_b[0]),
+                k2 * (disp_a[1] - disp_b[1]) + k3 * (rot_a[2] + rot_b[2]),
+                k2 * (disp_a[2] - disp_b[2]) - k3 * (rot_a[1] + rot_b[1])
+            )
+            inc_moment_a = Vector3(
+                k4 * (rot_a[0] - rot_b[0]),
+                k3 * (disp_b[2] - disp_a[2]) + k5 * rot_a[1] + k6 * rot_b[1],
+                k3 * (disp_a[1] - disp_b[1]) + k5 * rot_a[2] + k6 * rot_b[2]
+            )
+            # No need to calculate inc_force_b as inc_force_b == - inc_force_a and force_b == - force_a
+            inc_moment_b = Vector3(
+                k4 * (rot_b[0] - rot_a[0]),
+                k3 * (disp_b[2] - disp_a[2]) + k6 * rot_a[1] + k5 * rot_b[1],
+                k3 * (disp_a[1] - disp_b[1]) + k6 * rot_a[2] + k5 * rot_b[2]
+            )
+
+            # forceVector = K @ dispVector
+            cf[offset].force_a += inc_force_a
+            # cf[offset].force_a += Vector3(forceVector[0], forceVector[1], forceVector[2])
+            cf[offset].moment_a += inc_moment_a
+            # cf[offset].moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5])
+            force_b = - cf[offset].force_a
+            # cf[offset].force_b += Vector3(forceVector[6], forceVector[7], forceVector[8])
+            cf[offset].moment_b += inc_moment_b
+            # cf[offset].moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11])
+            
+            # For debug only
+            # Check equilibrium
+            # if (tm.length(cf[offset].force_a + cf[offset].force_b) > DoublePrecisionTolerance):
+            #     print("Equilibrium error.")
+
+            # Check whether the bond fails
+            sigma_c_a = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[offset].moment_a[1] ** 2 + cf[offset].moment_a[2] ** 2)
+            sigma_c_b = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[offset].moment_b[1] ** 2 + cf[offset].moment_b[2] ** 2)
+            sigma_c_max = -tm.min(sigma_c_a, sigma_c_b)
+            sigma_t_a = sigma_c_a
+            sigma_t_b = sigma_c_b
+            sigma_t_max = tm.max(sigma_t_a, sigma_t_b)
+            tau_max = ti.abs(cf[offset].moment_a[0]) * r_b / 2.0 / I_b + 4.0 / 3.0 / A_b * tm.sqrt(cf[offset].force_a[1] ** 2 + cf[offset].force_a[2] ** 2)
+            if (sigma_c_max >= surf[type_i, type_j].compressiveStrength): # Compressive failure
+                cf[offset].isBonded = 0
+                cf[offset].isActive = 0
+                # print(f"Bond compressive failure at: {i}, {j}")
+            elif (sigma_t_max >= surf[type_i, type_j].tensileStrength): # Tensile failure
+                cf[offset].isBonded = 0
+                cf[offset].isActive = 0
+                # print(f"Bond tensile failure at: {i}, {j}\n")
+            elif (tau_max >= surf[type_i, type_j].shearStrength): # Shear failure
+                cf[offset].isBonded = 0
+                cf[offset].isActive = 0
+                # print(f"Bond shear failure at: {i}, {j}\n")
+            else: # Intact bond, need to conduct force to particles
+                # Notice the inverse of signs due to Newton's third law
+                # and LOCAL to GLOBAL coordinates
+                ti.atomic_add(gf[i].force, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].force_a))
+                ti.atomic_add(gf[j].force, ti.Matrix.inverse(rotationMatrix) @ (-force_b))
+                ti.atomic_add(gf[i].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].moment_a))
+                ti.atomic_add(gf[j].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].moment_b))
+
+
+    @ti.func
+    def evaluate_unbonded(self, offset: Integer):
+        dt = self.config.dt
+        gf = ti.static(self.gf)
+        cf = ti.static(self.cf)
+        mf = ti.static(self.mf)
+        surf = ti.static(self.surf)
+        
+        i = cf[offset].i
+        j = cf[offset].j
+        
+        # Contact resolution
+        # Find out rotation matrix
+        # https://math.stackexchange.com/questions/180418/calculate-rotation-matrix-to-align-vector-a-to-vector-b-in-3d
+        a = tm.normalize(gf[j].position - gf[i].position)
+        b = Vector3(1.0, 0.0, 0.0) # Local x coordinate
+        v = tm.cross(a, b)
+        s = tm.length(v)
+        c = tm.dot(a, b)
+        rotationMatrix = Zero3x3()
+        if (s < DoublePrecisionTolerance):
+            if (c > 0.0):
+                rotationMatrix = ti.Matrix.diag(3, 1.0)
+            else:
+                rotationMatrix = Matrix3x3([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+        else:
+            vx = Matrix3x3([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+            rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
+            
+        length = tm.length(gf[j].position - gf[i].position)
+        offset = i * set_max_coordinate_number + j
+        # Contact evaluation (with contact model)
+        
+        # Non-bonded, use Hertz-Mindlin
+        # Calculation relative translational and rotational displacements
+        # Need to include the impact of particle rotation in contact relative translational displacement
+        # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
+        # https://doi.org/10.1002/nme.6568
+        # Eqs. (1)-(2)
+        # Implementation reference: https://github.com/CFDEMproject/LIGGGHTS-PUBLIC/blob/master/src/surface_model_default.h
+        # Lines 140-189
+        gap = length - gf[i].radius - gf[j].radius # gap must be negative to ensure an intact contact
+        delta_n = ti.abs(gap) # For parameter calculation only
+
+        # For debug only
+        # if (delta_n > 0.05 * ti.min(gf[i].radius, gf[j].radius)):
+        #     print("WARNING: Overlap particle-particle exceeds 0.05")
+        
+        cf[offset].position = gf[i].position + tm.normalize(gf[j].position - gf[i].position) * (gf[i].radius - delta_n)
+        r_i = cf[offset].position - gf[i].position
+        r_j = cf[offset].position - gf[j].position
+        # Velocity of a point on the surface of a rigid body
+        v_c_i = tm.cross(gf[i].omega, r_i) + gf[i].velocity
+        v_c_j = tm.cross(gf[j].omega, r_j) + gf[j].velocity
+        v_c = rotationMatrix @ (v_c_j - v_c_i) # LOCAL coordinate
+        # Parameter calculation
+        # Reference: https://www.cfdem.com/media/DEM/docu/gran_model_hertz.html
+        type_i: Integer = gf[i].materialType
+        type_j: Integer = gf[j].materialType
+        Y_star = 1.0 / ((1.0 - mf[type_i].poissonRatio ** 2) / mf[type_i].elasticModulus + (1.0 - mf[type_j].poissonRatio ** 2) / mf[type_j].elasticModulus)
+        G_star = 1.0 / (2.0 * (2.0 - mf[type_i].poissonRatio) * (1.0 + mf[type_i].poissonRatio) / mf[type_i].elasticModulus + 2.0 * (2.0 - mf[type_j].poissonRatio) * (1.0 + mf[type_j].poissonRatio) / mf[type_j].elasticModulus)
+        R_star = 1.0 / (1.0 / gf[i].radius + 1.0 / gf[j].radius)
+        m_star = 1.0 / (1.0 / (mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3) + 1.0 / (mf[type_j].density * 4.0 / 3.0 * tm.pi * gf[j].radius ** 3))
+        beta  = tm.log(surf[type_i, type_j].coefficientRestitution) / tm.sqrt(tm.log(surf[type_i, type_j].coefficientRestitution) ** 2 + tm.pi ** 2)
+        S_n  = 2.0 * Y_star * tm.sqrt(R_star * delta_n)
+        S_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
+        k_n  = 4.0 / 3.0 * Y_star * tm.sqrt(R_star * delta_n)
+        gamma_n  = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_n * m_star) # Check whether gamma_n >= 0
+        k_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
+        gamma_t  = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_t * m_star) # Check whether gamma_t >= 0
+
+        # Shear displacement increments
+        shear_increment = v_c * dt
+        shear_increment[0] = 0.0 # Remove the normal direction
+        cf[offset].shear_displacement += shear_increment
+        # Normal direction - LOCAL - the force towards particle j
+        F = Vector3(0.0, 0.0, 0.0)
+        # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
+        # https://doi.org/10.1002/nme.6568
+        # Eq. (29)
+        # Be aware of signs
+        F[0] = - k_n * gap - gamma_n * v_c[0]
+        # Shear direction - LOCAL - the force towards particle j
+        try_shear_force = - k_t * cf[offset].shear_displacement
+        if (tm.length(try_shear_force) >= surf[type_i, type_j].coefficientFriction * F[0]): # Sliding
+            ratio : Real = surf[type_i, type_j].coefficientFriction * F[0] / tm.length(try_shear_force)
+            F[1] = try_shear_force[1] * ratio
+            F[2] = try_shear_force[2] * ratio
+            cf[offset].shear_displacement[1] = F[1] / k_t
+            cf[offset].shear_displacement[2] = F[2] / k_t
+        else: # No sliding
+            F[1] = try_shear_force[1] - gamma_t * v_c[1]
+            F[2] = try_shear_force[2] - gamma_t * v_c[2]
+        
+        # No moment is conducted in Hertz-Mindlin model
+        
+        # For P4C output
+        cf[offset].force_a = F
+        # cf[offset].force_b = -F
+        # Assigning contact force to particles
+        # Notice the inverse of signs due to Newton's third law
+        # and LOCAL to GLOBAL coordinates
+        F_i_global = ti.Matrix.inverse(rotationMatrix) @ (-F)
+        F_j_global = ti.Matrix.inverse(rotationMatrix) @ F
+        ti.atomic_add(gf[i].force, F_i_global)
+        ti.atomic_add(gf[j].force, F_j_global)
+        # As the force is at contact position
+        # additional moments will be assigned to particles
+        # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
+        # https://doi.org/10.1002/nme.6568
+        # Eqs. (3)-(4)
+        ti.atomic_add(gf[i].moment, tm.cross(r_i, F_i_global))
+        ti.atomic_add(gf[j].moment, tm.cross(r_j, F_j_global))
+    
+    
+    @ti.func
+    def resolve_unbonded(self, i : Integer, j : Integer):
         '''
         Particle-particle contact detection
         '''
@@ -740,7 +944,7 @@ class DEMSolver:
         
         if (offset >= 0): # Existing contact
             if (cf[offset].isBonded): # Bonded contact
-                eval = True # Bonded contact must exist. Go to evaluation and if bond fails, the contact state will change thereby.
+                eval = False # Bonded contact must exist. which is already solved in previous step: resolve_bonded()
             else: # Non-bonded contact, should check whether two particles are still in contact
                 if (- gf[i].radius - gf[j].radius + tm.length(gf[j].position - gf[i].position) < 0): # Use PFC's gap < 0 criterion
                     eval = True
@@ -764,214 +968,7 @@ class DEMSolver:
                 )
                 eval = True # Send to evaluation using Hertz-Mindlin contact model
         
-        if(eval):
-            dt = self.config.dt
-            # Contact resolution
-            # Find out rotation matrix
-            # https://math.stackexchange.com/questions/180418/calculate-rotation-matrix-to-align-vector-a-to-vector-b-in-3d
-            a = tm.normalize(gf[j].position - gf[i].position)
-            b = Vector3(1.0, 0.0, 0.0) # Local x coordinate
-            v = tm.cross(a, b)
-            s = tm.length(v)
-            c = tm.dot(a, b)
-            rotationMatrix = Zero3x3()
-            if (s < DoublePrecisionTolerance):
-                if (c > 0.0):
-                    rotationMatrix = ti.Matrix.diag(3, 1.0)
-                else:
-                    rotationMatrix = Matrix3x3([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
-            else:
-                vx = Matrix3x3([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
-                rotationMatrix = ti.Matrix.diag(3, 1.0) + vx + ((1.0 - c) / s**2) * vx @ vx
-                
-            length = tm.length(gf[j].position - gf[i].position)
-            # Contact evaluation (with contact model)
-            if (cf[offset].isBonded): # Bonded, use EBPM
-                cf[offset].position = 0.5 * (gf[i].position + gf[j].position)
-                disp_a = rotationMatrix @ gf[i].velocity * dt
-                disp_b = rotationMatrix @ gf[j].velocity * dt
-                rot_a = rotationMatrix @ gf[i].omega * dt
-                rot_b = rotationMatrix @ gf[j].omega * dt
-                # Deprecated
-                # dispVector = EBPMForceDisplacementVector([disp_a, rot_a, disp_b, rot_b])
-                type_i: Integer = gf[i].materialType
-                type_j: Integer = gf[j].materialType
-                r_b = surf[type_i, type_j].radius_ratio * tm.min(gf[i].radius, gf[j].radius)
-                L_b = length
-                E_b = surf[type_i, type_j].elasticModulus
-                nu = surf[type_i, type_j].poissonRatio
-                I_b = (r_b ** 4) * tm.pi / 4.0
-                phi = 20.0 / 3.0 * (r_b ** 2) / (L_b ** 2) * (1.0 + nu)
-                A_b = tm.pi * (r_b ** 2)
-                k1 = E_b * A_b / L_b
-                k2 = 12.0 * E_b * I_b / (L_b ** 3) / (1.0 + phi)
-                k3 = 6.0 * E_b * I_b / (L_b ** 2) / (1.0 + phi)
-                k4 = E_b * I_b / L_b / (1.0 + nu)
-                k5 = E_b * I_b * (4.0 + phi) / L_b / (1.0 + phi)
-                k6 = E_b * I_b * (2.0 - phi) / L_b / (1.0 + phi)
-                inc_force_a = Vector3(
-                    k1 * (disp_a[0] - disp_b[0]),
-                    k2 * (disp_a[1] - disp_b[1]) + k3 * (rot_a[2] + rot_b[2]),
-                    k2 * (disp_a[2] - disp_b[2]) - k3 * (rot_a[1] + rot_b[1])
-                )
-                inc_moment_a = Vector3(
-                    k4 * (rot_a[0] - rot_b[0]),
-                    k3 * (disp_b[2] - disp_a[2]) + k5 * rot_a[1] + k6 * rot_b[1],
-                    k3 * (disp_a[1] - disp_b[1]) + k5 * rot_a[2] + k6 * rot_b[2]
-                )
-                # No need to calculate inc_force_b as inc_force_b == - inc_force_a and force_b == - force_a
-                inc_moment_b = Vector3(
-                    k4 * (rot_b[0] - rot_a[0]),
-                    k3 * (disp_b[2] - disp_a[2]) + k6 * rot_a[1] + k5 * rot_b[1],
-                    k3 * (disp_a[1] - disp_b[1]) + k6 * rot_a[2] + k5 * rot_b[2]
-                )
-                # Deprecated
-                # K = EBPMStiffnessMatrix([
-                #        disp_a         rot_a          disp_b         rot_b
-                #        0    1    2    0    1    2    0    1    2    0    1    2
-                #    [  k1,   0,   0,   0,   0,   0, -k1,   0,   0,   0,   0,   0], 0 inc_force_a
-                #    [   0,  k2,   0,   0,   0,  k3,   0, -k2,   0,   0,   0,  k3], 1
-                #    [   0,   0,  k2,   0, -k3,   0,   0,   0, -k2,   0, -k3,   0], 2
-                #    [   0,   0,   0,  k4,   0,   0,   0,   0,   0, -k4,   0,   0], 0 inc_moment_a
-                #    [   0,   0, -k3,   0,   k5,  0,   0,   0,  k3,   0,  k6,   0], 1
-                #    [   0,   k3,  0,   0,   0,  k5,   0, -k3,   0,   0,   0,  k6], 2
-                #    [ -k1,   0,   0,   0,   0,   0,  k1,   0,   0,   0,   0,   0], 0 inc_force_b
-                #    # K[7, 5] is WRONG in original EBPM document
-                #    # ΔFay + ΔFby is nonzero
-                #    # which does not satisfy the equilibrium
-                #    # Acknowledgement to Dr. Xizhong Chen from
-                #    # Department of Chemical and Biological Engineering,
-                #    # The University of Sheffield
-                #    # Reference: Chen et al. (2022) A comparative assessment and unification of bond models in DEM simulations.
-                #    # https://doi.org/10.1007/s10035-021-01187-2
-                #    [   0, -k2,   0,   0,   0, -k3,   0,  k2,   0,   0,   0, -k3], 1
-                #    [   0,   0, -k2,   0,  k3,   0,   0,   0,  k2,   0,  k3,   0], 2
-                #    [   0,   0,   0, -k4,   0,   0,   0,   0,   0,  k4,   0,   0], 0 inc_moment_b
-                #    [   0,   0, -k3,   0,  k6,   0,   0,   0,  k3,   0,  k5,   0], 1
-                #    [   0,  k3,   0,   0,   0,  k6,   0, -k3,   0,   0,   0,  k5]  2
-                #])
-                # forceVector = K @ dispVector
-                cf[offset].force_a += inc_force_a
-                # cf[offset].force_a += Vector3(forceVector[0], forceVector[1], forceVector[2])
-                cf[offset].moment_a += inc_moment_a
-                # cf[offset].moment_a += Vector3(forceVector[3], forceVector[4], forceVector[5])
-                force_b = - cf[offset].force_a
-                # cf[offset].force_b += Vector3(forceVector[6], forceVector[7], forceVector[8])
-                cf[offset].moment_b += inc_moment_b
-                # cf[offset].moment_b += Vector3(forceVector[9], forceVector[10], forceVector[11])
-                
-                # For debug only
-                # Check equilibrium
-                # if (tm.length(cf[offset].force_a + cf[offset].force_b) > DoublePrecisionTolerance):
-                #     print("Equilibrium error.")
-
-                # Check whether the bond fails
-                sigma_c_a = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[offset].moment_a[1] ** 2 + cf[offset].moment_a[2] ** 2)
-                sigma_c_b = force_b[0] / A_b - r_b / I_b * tm.sqrt(cf[offset].moment_b[1] ** 2 + cf[offset].moment_b[2] ** 2)
-                sigma_c_max = -tm.min(sigma_c_a, sigma_c_b)
-                sigma_t_a = sigma_c_a
-                sigma_t_b = sigma_c_b
-                sigma_t_max = tm.max(sigma_t_a, sigma_t_b)
-                tau_max = ti.abs(cf[offset].moment_a[0]) * r_b / 2.0 / I_b + 4.0 / 3.0 / A_b * tm.sqrt(cf[offset].force_a[1] ** 2 + cf[offset].force_a[2] ** 2)
-                if (sigma_c_max >= surf[type_i, type_j].compressiveStrength): # Compressive failure
-                    cf[offset].isBonded = 0
-                    cf[offset].isActive = 0
-                    # print(f"Bond compressive failure at: {i}, {j}")
-                elif (sigma_t_max >= surf[type_i, type_j].tensileStrength): # Tensile failure
-                    cf[offset].isBonded = 0
-                    cf[offset].isActive = 0
-                    # print(f"Bond tensile failure at: {i}, {j}\n")
-                elif (tau_max >= surf[type_i, type_j].shearStrength): # Shear failure
-                    cf[offset].isBonded = 0
-                    cf[offset].isActive = 0
-                    # print(f"Bond shear failure at: {i}, {j}\n")
-                else: # Intact bond, need to conduct force to particles
-                    # Notice the inverse of signs due to Newton's third law
-                    # and LOCAL to GLOBAL coordinates
-                    ti.atomic_add(gf[i].force, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].force_a))
-                    ti.atomic_add(gf[j].force, ti.Matrix.inverse(rotationMatrix) @ (-force_b))
-                    ti.atomic_add(gf[i].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].moment_a))
-                    ti.atomic_add(gf[j].moment, ti.Matrix.inverse(rotationMatrix) @ (-cf[offset].moment_b))
-            else: # Non-bonded, use Hertz-Mindlin
-                # Calculation relative translational and rotational displacements
-                # Need to include the impact of particle rotation in contact relative translational displacement
-                # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
-                # https://doi.org/10.1002/nme.6568
-                # Eqs. (1)-(2)
-                # Implementation reference: https://github.com/CFDEMproject/LIGGGHTS-PUBLIC/blob/master/src/surface_model_default.h
-                # Lines 140-189
-                gap = length - gf[i].radius - gf[j].radius # gap must be negative to ensure an intact contact
-                delta_n = ti.abs(gap) # For parameter calculation only
-
-                # For debug only
-                # if (delta_n > 0.05 * ti.min(gf[i].radius, gf[j].radius)):
-                #     print("WARNING: Overlap particle-particle exceeds 0.05")
-                
-                cf[offset].position = gf[i].position + tm.normalize(gf[j].position - gf[i].position) * (gf[i].radius - delta_n)
-                r_i = cf[offset].position - gf[i].position
-                r_j = cf[offset].position - gf[j].position
-                # Velocity of a point on the surface of a rigid body
-                v_c_i = tm.cross(gf[i].omega, r_i) + gf[i].velocity
-                v_c_j = tm.cross(gf[j].omega, r_j) + gf[j].velocity
-                v_c = rotationMatrix @ (v_c_j - v_c_i) # LOCAL coordinate
-                # Parameter calculation
-                # Reference: https://www.cfdem.com/media/DEM/docu/gran_model_hertz.html
-                type_i: Integer = gf[i].materialType
-                type_j: Integer = gf[j].materialType
-                Y_star = 1.0 / ((1.0 - mf[type_i].poissonRatio ** 2) / mf[type_i].elasticModulus + (1.0 - mf[type_j].poissonRatio ** 2) / mf[type_j].elasticModulus)
-                G_star = 1.0 / (2.0 * (2.0 - mf[type_i].poissonRatio) * (1.0 + mf[type_i].poissonRatio) / mf[type_i].elasticModulus + 2.0 * (2.0 - mf[type_j].poissonRatio) * (1.0 + mf[type_j].poissonRatio) / mf[type_j].elasticModulus)
-                R_star = 1.0 / (1.0 / gf[i].radius + 1.0 / gf[j].radius)
-                m_star = 1.0 / (1.0 / (mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3) + 1.0 / (mf[type_j].density * 4.0 / 3.0 * tm.pi * gf[j].radius ** 3))
-                beta  = tm.log(surf[type_i, type_j].coefficientRestitution) / tm.sqrt(tm.log(surf[type_i, type_j].coefficientRestitution) ** 2 + tm.pi ** 2)
-                S_n  = 2.0 * Y_star * tm.sqrt(R_star * delta_n)
-                S_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
-                k_n  = 4.0 / 3.0 * Y_star * tm.sqrt(R_star * delta_n)
-                gamma_n  = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_n * m_star) # Check whether gamma_n >= 0
-                k_t  = 8.0 * G_star * tm.sqrt(R_star * delta_n)
-                gamma_t  = - 2.0 * beta * tm.sqrt(5.0 / 6.0 * S_t * m_star) # Check whether gamma_t >= 0
-
-                # Shear displacement increments
-                shear_increment = v_c * dt
-                shear_increment[0] = 0.0 # Remove the normal direction
-                cf[offset].shear_displacement += shear_increment
-                # Normal direction - LOCAL - the force towards particle j
-                F = Vector3(0.0, 0.0, 0.0)
-                # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
-                # https://doi.org/10.1002/nme.6568
-                # Eq. (29)
-                # Be aware of signs
-                F[0] = - k_n * gap - gamma_n * v_c[0]
-                # Shear direction - LOCAL - the force towards particle j
-                try_shear_force = - k_t * cf[offset].shear_displacement
-                if (tm.length(try_shear_force) >= surf[type_i, type_j].coefficientFriction * F[0]): # Sliding
-                    ratio : Real = surf[type_i, type_j].coefficientFriction * F[0] / tm.length(try_shear_force)
-                    F[1] = try_shear_force[1] * ratio
-                    F[2] = try_shear_force[2] * ratio
-                    cf[offset].shear_displacement[1] = F[1] / k_t
-                    cf[offset].shear_displacement[2] = F[2] / k_t
-                else: # No sliding
-                    F[1] = try_shear_force[1] - gamma_t * v_c[1]
-                    F[2] = try_shear_force[2] - gamma_t * v_c[2]
-                
-                # No moment is conducted in Hertz-Mindlin model
-                
-                # For P4C output
-                cf[offset].force_a = F
-                # cf[offset].force_b = -F
-                # Assigning contact force to particles
-                # Notice the inverse of signs due to Newton's third law
-                # and LOCAL to GLOBAL coordinates
-                F_i_global = ti.Matrix.inverse(rotationMatrix) @ (-F)
-                F_j_global = ti.Matrix.inverse(rotationMatrix) @ F
-                ti.atomic_add(gf[i].force, F_i_global)
-                ti.atomic_add(gf[j].force, F_j_global)
-                # As the force is at contact position
-                # additional moments will be assigned to particles
-                # Reference: Peng et al. (2021) Critical time step for discrete element method simulations of convex particles with central symmetry.
-                # https://doi.org/10.1002/nme.6568
-                # Eqs. (3)-(4)
-                ti.atomic_add(gf[i].moment, tm.cross(r_i, F_i_global))
-                ti.atomic_add(gf[j].moment, tm.cross(r_j, F_j_global))
+        if(eval): self.evaluate_unbonded(offset)
 
 
     @ti.func
@@ -1271,11 +1268,14 @@ class DEMSolver:
         '''
         
         if(self.workload_type == WorkloadType.Heavy):
+            
+            
             if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
             self.bpcd.detect_collision(self.gf.position)
             if(self.statistics!=None):self.statistics.BroadPhaseDetectionTime.tick()
             
             if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
+            self.resolve_bonded()
             self.cp_list_resolve_collision(self.bpcd.get_collision_pair_range(), self.bpcd.get_collision_pair_list())
             if(self.statistics!=None):self.statistics.ContactResolveTime.tick()
         else:
@@ -1299,6 +1299,7 @@ class DEMSolver:
         
         # Particle body force
         if(self.statistics!=None):self.statistics.ApplyForceTime.tick()
+        self.timeSquence.add_force(self.frame, self.gf.force, self.grainID2Index)
         self.apply_body_force() 
         if(self.statistics!=None):self.statistics.ApplyForceTime.tick()
         
@@ -1310,6 +1311,7 @@ class DEMSolver:
         # clear certain states at the end
         self.late_clear_state()
         if(self.statistics!=None):self.statistics.SolveTime.tick()
+        self.frame += 1
 
 
     def init_simulation(self):
@@ -1336,8 +1338,9 @@ if __name__ == '__main__':
     elapsed_time = 0.0
     solver.init_simulation()
     # solver.save('output', 0)
-    p4p = open('output.p4p',encoding="UTF-8",mode='w')
-    p4c = open('output.p4c',encoding="UTF-8",mode='w')
+    if(not os.path.exists('output_data/')): os.mkdir('output_data/')
+    p4p = open('output_data/output.p4p',encoding="UTF-8",mode='w')
+    p4c = open('output_data/output.p4c',encoding="UTF-8",mode='w')
     solver.save_single(p4p,p4c,solver.config.dt * step)
     # solver.save(f'output_data/{step}', elapsed_time)
     while step < config.nsteps:
@@ -1349,9 +1352,11 @@ if __name__ == '__main__':
         t2 = time.time()
         #solver.save_single(p4p,p4c,solver.config.dt * step)
         print('>>>')
-        print(f"solved steps: {step} last-{config.saving_interval_steps}-sim: {t2-t1}s")
+        print(f"solved steps: {step}/{config.nsteps}(simt={elapsed_time}s) last-{config.saving_interval_steps}-sim: {t2-t1}s")
+        # save all frames to the single file
         solver.save_single(p4p, p4c, solver.config.dt * step)
-        # solver.save(f'output_data/{step}', elapsed_time)
+        # save one frame per file for debugging
+        solver.save(f'output_data/{step//config.saving_interval_steps}', solver.config.dt * step)
         if(solver.statistics): solver.statistics.report()
         print('<<<')
     p4p.close()
@@ -1359,4 +1364,4 @@ if __name__ == '__main__':
     
     tend = time.time()
     
-    print(f"total solve time = {tend - tstart}")
+    print(f"total solve time cost = {tend - tstart}")

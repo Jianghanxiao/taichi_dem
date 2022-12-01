@@ -1,8 +1,8 @@
 from TypeDefine import *
 
 
-set_init_particles: str = "input.p4p"
-
+set_init_particles: str = "input_data/input.p4p"
+set_time_sequnce_folder: str = "input_data/SGF"
 
 #=====================================
 # DEM Simulation Configuration
