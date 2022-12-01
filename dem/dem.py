@@ -1,123 +1,9 @@
 # Engineering quantitative DEM simulation using Taichi DEM
+# Taichi Hackathon 2022 Edition
 # 
 # Authors:
-# Denver Pilphis (Di Peng) - DEM theory and implementation
-# MuGdxy (Xinyu Lu) - Performance optimization
-# 
-# Introducion
-# This instance provides a complete implementation of discrete element method (DEM) for simulation.
-# Complex DEM mechanics are considered and the result is engineering quantitative.
-# The efficiency of computation is guaranteed by Taichi, along with proper arrangements of data and algorithms.
-#
-# Features
-# Compared with initial version, this instance has added the following features:
-# 1.  2D DEM to 3D DEM
-# 2.  Particle orientation and rotation are fully considered and implemented, in which the possibility
-#     for modeling nonspherical particles is reserved
-# 3.  Wall (geometry in DEM) element is implemented, particle-wall contact is solved
-# 4.  Complex DEM contact models are implemented including a bond model (Edinburgh Bonded Particle Model, EBPM)
-#     and a granular contact model (Hertz-Mindlin Contact Model)
-# 5.  As a bond model is implemented, nonspherical particles can be simulated with bonded agglomerates
-# 6.  As a bond model is implemented, particle breakage can be simulated
-# 7.  Material properties are associated with particles / walls to reduce the space cost
-# 8.  Surface interaction properties are associated with contacts to reduce the space cost
-# 9.  Spatial hash table is implemented based on Morton code for neighboring search (broad phase collision
-#     detection)
-# 10. Neighboring pairs are stored to reduce the divergence within the kernel and thus increase the efficiency
-#     of parallel computing, in which bit table and parallel scan algorithm are adopted for low and high
-#     workloads respectively
-# 11. Contacts are stored via the dynamic list linked to each particle to reduce the space cost, and the list
-#     is maintained (including appending and removing contacts) during every time step.
-#
-# Demos
-# 1. Carom billiards
-# This demo performs the first stage of carom billiards. The white ball goes towards other balls and collision
-# occurs soon. Then the balls scatter. Although there is energy loss, all the balls will never stop as they
-# enter the state of pure rotation and no rolling resistance is available to dissipate the rotational kinematic
-# energy. This could be a good example of validating Hertz-Mindlin model.
-# Parameters to set:
-# set_domain_min = Vector3(-5.0, -5.0, -1.0)
-# set_domain_max = Vector3(5.0, 5.0, 1.0)
-# set_init_particles = "Resources/carom.p4p"
-# set_wall_normal = Vector3(0.0, 0.0, -1.0)
-# set_wall_distance = 0.03125
-# set_max_coordinate_number = 16
-# DEMSolverConfig.dt = 2.56e-6
-# DEMSolverConfig.target_time = 1.28
-# DEMSolverConfig.saving_interval_time = 2.56e-3
-# DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
-# 
-# 2. Cube with 911 particles impact on a flat surface
-# This demo performs a bonded agglomerate with cubed shape hitting on a flat surface.
-# The bonds within the agglomerate will fail while the agglomerate is hitting the surface.
-# Then the agglomerate will break into fragments, flying to the surrounding space.
-# This could be a good example of validating EBPM.
-# Parameters to set:
-# set_domain_min = Vector3(-0.5, -0.5, -0.5)
-# set_domain_max = Vector3(0.11, 0.5, 0.5)
-# set_init_particles = "Resources/cube_911_particles_impact.p4p"
-# set_wall_normal = Vector3(1.0, 0.0, 0.0)
-# set_wall_distance = 0.02
-# set_max_coordinate_number = 16
-# DEMSolverConfig.dt = 1e-7
-# DEMSolverConfig.target_time = 0.01
-# DEMSolverConfig.saving_interval_time = 1e-4
-# DEMSolverConfig.gravity = Vector3(0.0, 0.0, 0.0)
-#
-# 3. Cube with 18112 particles impact on a flat surface
-# This demo is similar to the one above, with the only difference of particle number.
-# This could be a good example of benchmark on large system simulation.
-# Parameters to set:
-# set_domain_min = Vector3(-10, -10, -10)
-# set_domain_max = Vector3(0.11, 10, 10)
-# set_init_particles = "Resources/cube_18112_particles_impact.p4p"
-# set_wall_normal = Vector3(1.0, 0.0, 0.0)
-# set_wall_distance = 0.1
-# set_max_coordinate_number = 16
-# DEMSolverConfig.dt = 1e-7
-# DEMSolverConfig.target_time = 0.1
-# DEMSolverConfig.saving_interval_time = 0.001
-# DEMSolverConfig.gravity = Vector3(0.0, 0.0, 0.0)
-#
-# 4. Stanford bunny free fall
-# This demo contains a Stanford bunny shaped bonded agglomerate falling 
-# in gravity and hitting on the flat surface.
-# The breakage of the bunny is demonstrated.
-# This could be a good example of benchmark on large system simulation.
-# Parameters to set:
-# set_domain_min = Vector3(-200.0, -200.0, -30.0)
-# set_domain_max = Vector3(200.0, 200.0, 90.0)
-# set_init_particles = "Resources/bunny.p4p"
-# set_wall_normal = Vector3(0.0, 0.0, -1.0)
-# set_wall_distance = 25.0
-# set_max_coordinate_number = 64
-# DEMSolverConfig.dt = 2.63e-5
-# DEMSolverConfig.target_time = 10.0
-# DEMSolverConfig.saving_interval_time = 0.05
-# DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
-#
-# 5. Soft Stanford bunny free fall
-# This demo contains a Stanford bunny shaped bonded agglomerate falling
-# in gravity and hitting on the flat surface.
-# The bunny will not break as the strength of the bond is extremely high
-# instead, the bunny will experience a very soft mechanical behavior
-# as the elastic modulus of the bond is relatively low.
-# This could be a good example of comparison to the demo above.
-# Parameters to set:
-# set_domain_min = Vector3(-200.0, -200.0, -30.0)
-# set_domain_max = Vector3(200.0, 200.0, 90.0)
-# set_init_particles = "Resources/bunny.p4p"
-# set_wall_normal = Vector3(0.0, 0.0, -1.0)
-# set_wall_distance = 1.0
-# set_bond_elastic_modulus: Real = 5e8
-# set_bond_compressive_strength: Real = 5e8
-# set_bond_tensile_strength: Real = 9e7
-# set_bond_shear_strength: Real = 9e7
-# set_max_coordinate_number = 64
-# DEMSolverConfig.dt = 2.63e-5
-# DEMSolverConfig.target_time = 5.0
-# DEMSolverConfig.saving_interval_time = 0.05
-# DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
+# Denver Pilphis (Di Peng) - DEM theory and implementation, particle-wall bonding
+# MuGdxy (Xinyu Lu) - HPC implementation, time sequence implementation
 
 
 from math import pi
@@ -128,6 +14,8 @@ import numpy as np
 import time
 # define the data type
 from TypeDefine import *
+# Data Class
+from DataClass import *
 # dem config file
 from DemConfig import *
 # util function
@@ -142,139 +30,6 @@ from TimeSequence import *
 # Init taichi context
 # Device memory size is recommended to be 75% of your GPU VRAM
 ti.init(arch=ti.gpu, debug=False)
-
-#=====================================
-# Environmental Variables
-#=====================================
-DoublePrecisionTolerance: float = 1e-12 # Boundary between zeros and non-zeros
-MaxParticleCount: int = 1000000000
-# MaxParticleCount: int = 100
-
-#=====================================
-# Init Data Structure
-#=====================================
-class DEMSolverConfig:
-    def __init__(self):
-        # Gravity, a global parameter
-        # Denver Pilphis: in this example, we assign no gravity
-        self.gravity : Vector3 = Vector3(0.0, 0.0, -9.81)
-        # Global damping coefficient
-        self.global_damping = 0.0
-        # Time step, a global parameter
-        self.dt : Real = 2.63e-5  # Larger dt might lead to unstable results.
-        self.target_time : Real = 10.0
-        # No. of steps for run, a global parameter
-        self.nsteps : Integer = int(self.target_time / self.dt)
-        self.saving_interval_time : Real = 0.05
-        self.saving_interval_steps : Real = int(self.saving_interval_time / self.dt)
-        
-
-#======================================
-# Data Class Definition
-#======================================
-# Material property
-@ti.dataclass
-class Material: # Size: 24B
-    # Material attributes
-    density: Real  # Density, double
-    elasticModulus: Real  # Elastic modulus, double
-    poissonRatio: Real # Poisson's ratio, double
-
-# Surface interaction property
-@ti.dataclass
-class Surface: # Size: 72B
-    # Hertz-Mindlin parameters
-    coefficientFriction: Real # Friction coefficient, double
-    coefficientRestitution: Real # Coefficient of resitution, double
-    coefficientRollingResistance: Real # Coefficient of rolling resistance, double
-    # EBPM parameters
-    radius_ratio : Real # Section radius ratio
-    elasticModulus : Real # Elastic modulus of the bond
-    poissonRatio : Real # Possion's ratio of the bond
-    compressiveStrength: Real # Compressive strengthrotationMatrixInte of the bond
-    tensileStrength: Real # Tensile strength of the bond
-    shearStrength: Real # Shear strength of the bond
-
-# Particle in DEM
-# Denver Pilphis: keep spherical shape at this stage, added particle attributes to make the particle kinematically complete
-@ti.dataclass
-class Grain: # Size: 296B
-    ID: Integer # Record Grain ID
-    materialType: Integer # Type number of material
-    radius: Real  # Radius, double
-    contactRadius: Real
-    # Translational attributes, all in GLOBAL coordinates
-    position: Vector3  # Position, Vector3
-    velocity: Vector3  # Velocity, Vector3
-    acceleration: Vector3  # Acceleration, Vector3
-    force: Vector3  # Force, Vector3
-    # Rotational attributes, all in GLOBAL coordinates
-    quaternion: Vector4  # Quaternion, Vector4, order in [w, x, y, z]
-    omega: Vector3  # Angular velocity, Vector3
-    omega_dot: Vector3  # Angular acceleration, Vector3
-    inertia: Matrix3x3 # Moment of inertia tensor, 3 * 3 matrix with double
-    moment: Vector3 # Total moment (including torque), Vector3
-
-# Wall in DEM
-# Only premitive wall is implemented
-@ti.dataclass
-class Wall: # Size: 36B
-    # Wall equation: Ax + By + Cz - D = 0
-    # Reference: Peng and Hanley (2019) Contact detection between convex polyhedra and superquadrics in discrete element codes.
-    # https://doi.org/10.1016/j.powtec.2019.07.082
-    # Eq. (8)
-    normal: Vector3 # Outer normal vector of the wall, [A, B, C]
-    distance: Real # Distance between origin and the wall, D
-    # Material properties
-    materialType: Integer
-
-# Contact in DEM
-# In this example, the Edinburgh Bond Particle Model (EBPM), along with Hertz-Mindlin model, is implemented
-# Reference: Brown et al. (2014) A bond model for DEM simulation of cementitious materials and deformable structures.
-# https://doi.org/10.1007/s10035-014-0494-4
-# Reference: Mindlin and Deresiewicz (1953) Elastic spheres in contact under varying oblique forces.
-# https://doi.org/10.1115/1.4010702
-@ti.dataclass
-class Contact: # Size: 144B
-    i:Integer
-    j:Integer
-    # Contact status
-    isActive : Integer # Contact exists: 1 - exist 0 - not exist
-    isBonded : Integer # Contact is bonded: 1 - bonded, use EBPM 0 - unbonded, use Hertz-Mindlin
-    # Common Parameters
-    materialType_i: Integer
-    materialType_j: Integer
-    # rotationMatrix : Matrix3x3 # Rotation matrix from global to local system of the contact
-    position : Vector3 # Position of contact point in GLOBAL coordinate
-    # radius : Real # Section radius: r = rratio * min(r1, r2), temporarily calculated in evaluation
-    # length : Real # Length of the bond
-    # EBPM parts
-    force_a : Vector3 # Contact force at side a in LOCAL coordinate
-    moment_a : Vector3 # Contact moment/torque at side a in LOCAL coordinate
-    # force_b = - force_a due to equilibrium
-    # force_b : Vector3 # Contact force at side b in LOCAL coordinate
-    moment_b : Vector3 # Contact moment/torque at side b in LOCAL coordinate
-    # Hertz-Mindlin parts
-    shear_displacement: Vector3 # Shear displacement stored in the contact
-
-@ti.dataclass
-class IOContact: # Size: 64B
-    '''
-    Contact data for IO
-    '''
-    i:Integer
-    j:Integer
-    position:Vector3
-    force_a:Vector3
-    isBonded:Integer
-    isActive:Integer
-
-class WorkloadType:
-    Auto = -1
-    Light = 0
-    Midium = 1
-    Heavy = 2
-
 
 @ti.data_oriented
 class DEMSolver:
@@ -300,8 +55,13 @@ class DEMSolver:
         
         self.statistics:DEMSolverStatistics = statistics
         self.workload_type = workload
+        # Taichi Hackathon 2022 append
         self.timeSquence = TimeSequence(set_time_sequnce_folder)
+        # Enclose step count and time elapsed to handle the time sequence
+        # Step count in DEM
         self.frame = 0
+        # Time elapsed in DEM
+        self.elapsedTime = 0.0
 
     def save(self, file_name:str, time:float):
         '''
@@ -408,6 +168,7 @@ class DEMSolver:
         n = int(line.split(' ')[1])
         n = min(n, MaxParticleCount)
         self.check_workload(n)
+        # Denver Pilphis: hard-coding
         nwall = 1
 
         # Initialize particles
@@ -516,7 +277,7 @@ class DEMSolver:
         self.surf[0, 0].compressiveStrength = set_bond_compressive_strength
         self.surf[0, 0].tensileStrength = set_bond_tensile_strength
         self.surf[0, 0].shearStrength = set_bond_shear_strength
-        # Particle-wall, EBPM is activated for Taichi Hackathon 2022
+        # Particle-wall bonding is activated for Taichi Hackathon 2022
         # HM
         self.surf[0, 1].coefficientFriction = set_pw_coefficient_friction
         self.surf[0, 1].coefficientRestitution = set_pw_coefficient_restitution
@@ -620,7 +381,7 @@ class DEMSolver:
             gf[i].moment += Vector3(0.0, 0.0, 0.0)
 
         # Taichi Hackathon 2022 append
-        # TODO: time sequence force series input
+        self.timeSquence.add_force(self.frame, self.gf.force, self.grainID2Index)
 
         # GLOBAL damping
         '''
@@ -1282,7 +1043,6 @@ class DEMSolver:
             raise("In Taichi Hackathon 2022 we only use heavy workload")
 
 
-
     def run_simulation(self):
         if(self.statistics!=None):self.statistics.SolveTime.tick()
         self.clear_state()
@@ -1299,7 +1059,6 @@ class DEMSolver:
         
         # Particle body force
         if(self.statistics!=None):self.statistics.ApplyForceTime.tick()
-        self.timeSquence.add_force(self.frame, self.gf.force, self.grainID2Index)
         self.apply_body_force() 
         if(self.statistics!=None):self.statistics.ApplyForceTime.tick()
         
@@ -1311,7 +1070,10 @@ class DEMSolver:
         # clear certain states at the end
         self.late_clear_state()
         if(self.statistics!=None):self.statistics.SolveTime.tick()
+
+        # Update step count and time
         self.frame += 1
+        self.elapsedTime += self.config.dt;
 
 
     def init_simulation(self):
@@ -1334,29 +1096,30 @@ if __name__ == '__main__':
     
     tstart = time.time()
     
-    step = 0
-    elapsed_time = 0.0
+    # Deprecated as step count and time elapsed are enclosed in solver
+    # step = 0
+    # elapsed_time = 0.0
     solver.init_simulation()
     # solver.save('output', 0)
     if(not os.path.exists('output_data/')): os.mkdir('output_data/')
     p4p = open('output_data/output.p4p',encoding="UTF-8",mode='w')
     p4c = open('output_data/output.p4c',encoding="UTF-8",mode='w')
-    solver.save_single(p4p,p4c,solver.config.dt * step)
+    solver.save_single(p4p,p4c,solver.config.dt * solver.frame)
     # solver.save(f'output_data/{step}', elapsed_time)
-    while step < config.nsteps:
+    while solver.frame < config.nsteps:
         t1 = time.time()
         for _ in range(config.saving_interval_steps): 
-            step += 1
-            elapsed_time += config.dt
+            # step += 1
+            # elapsed_time += config.dt
             solver.run_simulation()
         t2 = time.time()
         #solver.save_single(p4p,p4c,solver.config.dt * step)
         print('>>>')
-        print(f"solved steps: {step}/{config.nsteps}(simt={elapsed_time}s) last-{config.saving_interval_steps}-sim: {t2-t1}s")
+        print(f"solved steps: {solver.frame}/{config.nsteps}(simt={solver.elapsedTime}s) last-{config.saving_interval_steps}-sim: {t2-t1}s")
         # save all frames to the single file
-        solver.save_single(p4p, p4c, solver.config.dt * step)
+        solver.save_single(p4p, p4c, solver.config.dt * solver.frame)
         # save one frame per file for debugging
-        solver.save(f'output_data/{step//config.saving_interval_steps}', solver.config.dt * step)
+        solver.save(f'output_data/{solver.frame//config.saving_interval_steps}', solver.config.dt * solver.frame)
         if(solver.statistics): solver.statistics.report()
         print('<<<')
     p4p.close()
