@@ -7,7 +7,7 @@ def np2csv(name,data):
     np.savetxt(name + ".csv", data, delimiter=",")
 
 def cal_neighbor_search_radius(max_radius):
-    return max_radius * set_particle_contact_radius_multiplier * (1.0 + set_bond_tensile_strength / set_bond_elastic_modulus) * set_neiboring_search_safety_factor
+    return max_radius * set_particle_contact_radius_multiplier * (1.0 + 0.0 * set_bond_tensile_strength / set_bond_elastic_modulus) * set_neiboring_search_safety_factor
 
 def next_pow2(x):
     x -= 1

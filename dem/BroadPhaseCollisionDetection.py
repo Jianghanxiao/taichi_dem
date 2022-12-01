@@ -122,6 +122,9 @@ class PrefixSumExecutor:
 class BPCD:
     '''
     Broad Phase Collision Detection
+    main API:
+        create()
+        detect_collision()
     '''
     IGNORE_USER_DATA = -1
     ExplicitCollisionPair = 1
