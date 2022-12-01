@@ -41,13 +41,11 @@ class TimeSequence:
             add time sequence force to grain.force
         '''
         if(self.RangeIndex >= len(self.ranges)):
-            print("No more force range")
             return
         apply = False
         if(not self.rangeExist):
             next = self.RangeIndex + 1
             if(next >= len(self.ranges)):
-                print("No more force range")
                 return
             nextRange = self.ranges[next]
             if frame >= nextRange[0] and frame <= nextRange[1] :
@@ -66,7 +64,6 @@ class TimeSequence:
             else: # go to next range
                 next = self.RangeIndex + 1
                 if(next >= len(self.ranges)):
-                    print("No more force range")
                     return
                 nextRange = self.ranges[next]
                 if frame >= nextRange[0] and frame <= nextRange[1] :
