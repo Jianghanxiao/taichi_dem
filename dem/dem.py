@@ -380,9 +380,6 @@ class DEMSolver:
             gf[i].force += mf[type_i].density * 4.0 / 3.0 * tm.pi * gf[i].radius ** 3 * g
             gf[i].moment += Vector3(0.0, 0.0, 0.0)
 
-        # Taichi Hackathon 2022 append
-        self.timeSquence.add_force(self.frame, self.gf.force, self.grainID2Index)
-
         # GLOBAL damping
         '''
         Add GLOBAL damping for EBPM, GLOBAL damping is assigned to particles
@@ -1062,6 +1059,12 @@ class DEMSolver:
         self.apply_body_force() 
         if(self.statistics!=None):self.statistics.ApplyForceTime.tick()
         
+        # Taichi Hackathon 2022 append
+        # "Time sequence - particle range - body force" implementation
+        # Similar to but much more than "fix setforce command" in LIGGGHTS:
+        # https://www.cfdem.com/media/DEM/docu/fix_setforce.html
+        self.timeSquence.add_force(self.frame, self.gf.force, self.grainID2Index)
+
         # Time integration
         if(self.statistics!=None):self.statistics.UpdateTime.tick()
         self.update()
