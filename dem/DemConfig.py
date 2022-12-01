@@ -1,3 +1,6 @@
+# DEM Config
+# All the settings relating to the simulation come from here.
+
 from TypeDefine import *
 
 # Data import
