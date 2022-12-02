@@ -5,8 +5,8 @@ from TypeDefine import *
 
 # Data import
 
-set_init_particles: str = "../input_data/input.p4p"
-set_time_sequnce_folder: str = "../input_data/SGF"
+set_init_particles: str = "input_data/input.p4p"
+set_time_sequnce_folder: str = "input_data/SGF"
 
 #=====================================
 # DEM Simulation Configuration
@@ -17,12 +17,12 @@ set_time_sequnce_folder: str = "../input_data/SGF"
 set_domain_min: Vector3 = Vector3(0.0, 0.0, -10.0)
 set_domain_max: Vector3 = Vector3(200.0, 300.0, 10.0)
 
-set_gravity: Vector3 = Vector3(0.0, 0.0, 0.0);
-set_global_damping_coefficient: Real = 0.0;
+set_gravity: Vector3 = Vector3(0.0, 0.0, 0.0)
+set_global_damping_coefficient: Real = 0.0
 
-set_time_step: Real = 1e-3;
-set_target_time: Real = 4.0;
-set_saving_interval_time: Real = 0.04;
+set_time_step: Real = 1e-3
+set_target_time: Real = 4.0
+set_saving_interval_time: Real = 0.04
 
 # Parameters
 

@@ -7,115 +7,115 @@ from TypeDefine import *
 from Utils import *
 from DemConfig import *
 from DEMSolverStatistics import *
-
+from PrefixSumExecutor import *
 @ti.dataclass
 class Range:
     offset:Integer
     count:Integer
     current:Integer
 
-@ti.data_oriented
-class PrefixSumExecutor:
-    def __init__(self):
-        self.tree:ti.SNode = None
-        self.temp:ti.StructField = None
+# @ti.data_oriented
+# class PrefixSumExecutor:
+#     def __init__(self):
+#         self.tree:ti.SNode = None
+#         self.temp:ti.StructField = None
 
-    def _resize_temp(self, n):
-        ti.sync()
-        if(self.tree != None):
-            if(self.temp.shape[0] >= n): return
-            else: pass
-                # self.tree.destroy()
-        # ti.sync()
-        # realloc
-        print(f"resize_prefix_sum_temp:{n}")
-        fb = ti.FieldsBuilder()
-        self.temp = ti.field(Integer)
-        fb.dense(ti.i, n).place(self.temp)
-        self.tree = fb.finalize()
+#     def _resize_temp(self, n):
+#         ti.sync()
+#         if(self.tree != None):
+#             if(self.temp.shape[0] >= n): return
+#             else: pass
+#                 # self.tree.destroy()
+#         # ti.sync()
+#         # realloc
+#         print(f"resize_prefix_sum_temp:{n}")
+#         fb = ti.FieldsBuilder()
+#         self.temp = ti.field(Integer)
+#         fb.dense(ti.i, n).place(self.temp)
+#         self.tree = fb.finalize()
     
-    @ti.kernel
-    def serial(self, output:ti.template(), input:ti.template()):
-        n = input.shape[0]
-        output[0] = 0
-        ti.loop_config(serialize=True)
-        for i in range(1, n): 
-            output[i] = output[i - 1] + input[i - 1]
+#     @ti.kernel
+#     def serial(self, output:ti.template(), input:ti.template()):
+#         n = input.shape[0]
+#         output[0] = 0
+#         ti.loop_config(serialize=True)
+#         for i in range(1, n): 
+#             output[i] = output[i - 1] + input[i - 1]
 
-    @ti.kernel
-    def _down(self, d:Integer, 
-                    n:Integer,
-                    offset:ti.template(),
-                    output:ti.template()):
-            for i in range(n):
-                if(i < d):
-                    ai = offset*(2*i+1)-1
-                    bi = offset*(2*i+2)-1
-                    output[bi] += output[ai]
+#     @ti.kernel
+#     def _down(self, d:Integer, 
+#                     n:Integer,
+#                     offset:ti.template(),
+#                     output:ti.template()):
+#             for i in range(n):
+#                 if(i < d):
+#                     ai = offset*(2*i+1)-1
+#                     bi = offset*(2*i+2)-1
+#                     output[bi] += output[ai]
     
-    @ti.kernel
-    def _up(self,
-            d:Integer, 
-            n:Integer,
-            offset:ti.template(),
-            output:ti.template()):
-        for i in range(n):
-            if(i < d):
-                ai = offset*(2*i+1)-1
-                bi = offset*(2*i+2)-1
-                tmp = output[ai]
-                output[ai] = output[bi]
-                output[bi] += tmp
+#     @ti.kernel
+#     def _up(self,
+#             d:Integer, 
+#             n:Integer,
+#             offset:ti.template(),
+#             output:ti.template()):
+#         for i in range(n):
+#             if(i < d):
+#                 ai = offset*(2*i+1)-1
+#                 bi = offset*(2*i+2)-1
+#                 tmp = output[ai]
+#                 output[ai] = output[bi]
+#                 output[bi] += tmp
     
-    @ti.kernel
-    def _copy(self, n:Integer,
-              output:ti.template(),
-              input:ti.template()):
-        for i in range(n): output[i] = input[i]
-    @ti.kernel
-    def _copy_and_clear(self, n:Integer, npad:Integer, temp:ti.template(), input:ti.template()):
-        for i in range(n): temp[i] = input[i]
-        for i in range(n, npad): temp[i] = 0
+#     @ti.kernel
+#     def _copy(self, n:Integer,
+#               output:ti.template(),
+#               input:ti.template()):
+#         for i in range(n): output[i] = input[i]
+#     @ti.kernel
+#     def _copy_and_clear(self, n:Integer, npad:Integer, temp:ti.template(), input:ti.template()):
+#         for i in range(n): temp[i] = input[i]
+#         for i in range(n, npad): temp[i] = 0
 
-    def parallel_fast(self, output, input, cal_total = False):
-        ti.static_assert(next_pow2(input.shape[0])==input.shape[0], "parallel_fast requires input count = 2**p")
-        n:ti.i32 = input.shape[0]
-        d = n >> 1
-        self._copy(n, output,input)
-        offset = 1
-        while(d > 0):
-            self._down(d,n,offset,output)
-            offset <<= 1
-            d >>= 1
+#     # def parallel_fast(self, output, input, cal_total = False):
+#     #     ti.static_assert(next_pow2(input.shape[0])==input.shape[0], "parallel_fast requires input count = 2**p")
+#     #     n:ti.i32 = input.shape[0]
+#     #     d = n >> 1
+#     #     self._copy(n, output,input)
+#     #     offset = 1
+#     #     while(d > 0):
+#     #         self._down(d,n,offset,output)
+#     #         offset <<= 1
+#     #         d >>= 1
         
-        output[n-1] = 0
-        d = 1
-        while(d < n):
-            offset >>= 1
-            self._up(d,n,offset,output)
-            d <<= 1
-        if(cal_total): return output[n-1] + input[n -1]
+#     #     output[n-1] = 0
+#     #     d = 1
+#     #     while(d < n):
+#     #         offset >>= 1
+#     #         self._up(d,n,offset,output)
+#     #         d <<= 1
+#     #     if(cal_total): return output[n-1] + input[n -1]
     
-    def parallel(self,output,input,cal_total = False):
-        n:ti.i32 = input.shape[0]
-        npad = next_pow2(n)
-        self._resize_temp(npad)
-        self._copy_and_clear(n,npad,self.temp,input)
-        d = npad >> 1
-        offset = 1
-        while(d > 0):
-            self._down(d,npad,offset,self.temp)
-            offset <<= 1
-            d >>= 1
+#     def exclusive_scan(self,output,input):
+        # n:ti.i32 = input.shape[0]
+        # npad = next_pow2(n)
+        # self._resize_temp(npad)
+        # self._copy_and_clear(n,npad,self.temp,input)
+        # d = npad >> 1
+        # offset = 1
+        # while(d > 0):
+        #     self._down(d,npad,offset,self.temp)
+        #     offset <<= 1
+        #     d >>= 1
         
-        self.temp[npad-1] = 0
-        d = 1
-        while(d < npad):
-            offset >>= 1
-            self._up(d,npad,offset,self.temp)
-            d <<= 1
-        self._copy(n, output, self.temp)
-        if(cal_total): return output[n-1] + input[n -1]
+        # self.temp[npad-1] = 0
+        # d = 1
+        # while(d < npad):
+        #     offset >>= 1
+        #     self._up(d,npad,offset,self.temp)
+        #     d <<= 1
+        # self._copy(n, output, self.temp)
+        # return output[n-1] + input[n -1]
 
 
 @ti.data_oriented
@@ -211,7 +211,8 @@ class BPCD:
         if(self.statistics!=None):self.statistics.HashTableSetupTime.tick()
 
         if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
-        self.pse.parallel_fast(self.hash_table.offset, self.hash_table.count)
+        # self.pse.parallel_fast(self.hash_table.offset, self.hash_table.count)
+        self.pse.exclusive_scan(self.hash_table.offset, self.hash_table.count)
 
         if(self.statistics!=None):self.statistics.PrefixSumTime.tick()
         
@@ -223,7 +224,7 @@ class BPCD:
         else:
             self._clear_collision_pair()
             self._search_hashtable0(positions, self.cp_list)
-            total = self.pse.parallel(self.cp_range.offset, self.cp_range.count, cal_total = True)
+            total = self.pse.exclusive_scan(self.cp_range.offset, self.cp_range.count)
             if(total > self.cp_list.shape[0]):
                 count = max(total, self.cp_list.shape[0] + positions.shape[0] * set_collision_pair_init_capacity_factor)
                 self._resize_cp_list(count)

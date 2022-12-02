@@ -158,16 +158,34 @@ std::vector<Sphere> prepareSpecimen(const std::vector<cv::Point2f>& boundary)
     return sphList;
 }
 
-void extractBeltArea(const std::vector<Sphere>& sphList)
+//void extractBeltArea(const std::vector<Sphere>& sphList)
+//{
+//    cv::Mat srcImage = cv::imread(INPUT_IMAGE, CV_8UC4);
+//    std::ofstream outputFile(OUTPUT_BELT, std::ios::out);
+//    for (int i = 0; i < sphList.size(); ++i)
+//    {
+//        cv::Vec4b p = srcImage.at<cv::Vec4b>((int)sphList[i].y, (int)sphList[i].x);
+//        // BGRA
+//        if ((p.val[0] > pixel_threshold) && (p.val[1] > pixel_threshold) && (p.val[2] > pixel_threshold))
+//            outputFile << (i + 1) << std::endl;
+//    }
+//    outputFile.close();
+//}
+
+void extractColorDiffuse(const std::vector<Sphere>& sphList)
 {
     cv::Mat srcImage = cv::imread(INPUT_IMAGE, CV_8UC4);
-    std::ofstream outputFile(OUTPUT_BELT, std::ios::out);
+    std::ofstream outputFile(OUTPUT_COLOR_DIFFUSE, std::ios::out);
+    outputFile << "ID, R, G, B" << std::endl;
+    
     for (int i = 0; i < sphList.size(); ++i)
     {
         cv::Vec4b p = srcImage.at<cv::Vec4b>((int)sphList[i].y, (int)sphList[i].x);
-        // BGRA
-        if ((p.val[0] > pixel_threshold) && (p.val[1] > pixel_threshold) && (p.val[2] > pixel_threshold))
-            outputFile << (i + 1) << std::endl;
+        //BGR -> RGB
+        outputFile << (i + 1) << ',' 
+            << p.val[2] / (255.0f) << ',' 
+            << p.val[1] / (255.0f) << ',' 
+            << p.val[0] / (255.0f) << std::endl;
     }
     outputFile.close();
 }
@@ -177,7 +195,7 @@ int main()
     cv::Mat binImage= color2bit();
     std::vector<cv::Point2f> ptList = getPoints(binImage);
     std::vector<Sphere> sphList = prepareSpecimen(ptList);
-    extractBeltArea(sphList);
+    extractColorDiffuse(sphList);
     // cv::waitKey(0);
     return 0;
 }

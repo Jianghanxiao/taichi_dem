@@ -1076,7 +1076,7 @@ class DEMSolver:
 
         # Update step count and time
         self.frame += 1
-        self.elapsedTime += self.config.dt;
+        self.elapsedTime += self.config.dt
 
 
     def init_simulation(self):

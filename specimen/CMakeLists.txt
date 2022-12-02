@@ -4,6 +4,7 @@ find_package(OpenCV REQUIRED)
 #define some macro as input file and output file
 add_compile_options("-DINPUT_IMAGE=\"${CMAKE_CURRENT_SOURCE_DIR}/src.png\"")
 add_compile_options("-DOUTPUT_P4P=\"${CMAKE_CURRENT_SOURCE_DIR}/../input_data/input.p4p\"")
-add_compile_options("-DOUTPUT_BELT=\"${CMAKE_CURRENT_SOURCE_DIR}/../input_data/belt.txt\"")
+# add_compile_options("-DOUTPUT_BELT=\"${CMAKE_CURRENT_SOURCE_DIR}/../input_data/belt.txt\"")
+add_compile_options("-DOUTPUT_COLOR_DIFFUSE=\"${CMAKE_CURRENT_SOURCE_DIR}/../input_data/color_diffuse.csv\"")
 add_executable(specimen specimen.cpp)
 target_link_libraries( specimen ${OpenCV_LIBS} )
