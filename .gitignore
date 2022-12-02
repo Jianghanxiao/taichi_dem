@@ -1,10 +1,9 @@
 specimen/.vs
 specimen/out
 specimen/x64
-dem/output_data
-dem/__pycache__
 output*
 build/
 backup/
 __pycache__/
+dem/__pycache__
 geo/

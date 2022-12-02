@@ -21,8 +21,8 @@ set_gravity: Vector3 = Vector3(0.0, 0.0, 0.0)
 set_global_damping_coefficient: Real = 0.0
 
 set_time_step: Real = 1e-3
-set_target_time: Real = 4.0
-set_saving_interval_time: Real = 0.04
+set_target_time: Real = 10.0
+set_saving_interval_time: Real = 0.1
 
 # Parameters
 
@@ -43,16 +43,6 @@ set_bond_poission_ratio: Real = 0.25
 set_bond_compressive_strength: Real = 1e8
 set_bond_tensile_strength: Real = 1e8
 set_bond_shear_strength: Real = 1e8
-
-# Taichi Hackathon 2022 append
-# Particle-wall bonds have very high strength
-# to fix the specimen to the wall
-set_pw_bond_radius_ratio: Real = 1.0
-set_pw_bond_elastic_modulus: Real = 1e10
-set_pw_bond_poission_ratio: Real = 0.25
-set_pw_bond_compressive_strength: Real = 1e11
-set_pw_bond_tensile_strength: Real = 1e11
-set_pw_bond_shear_strength: Real = 1e11
 
 set_pp_coefficient_friction: Real = 0.3
 set_pp_coefficient_restitution: Real = 0.9
