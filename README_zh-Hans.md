@@ -15,7 +15,7 @@
 py launch.py
 ```
 
-查看可视化结果（需要安装[houdini](https://www.sidefx.com/products/houdini/)）：
+查看可视化结果 (需要安装[Houdini](https://www.sidefx.com/products/houdini/))：
 
 ```shell
 houdini visualizer.hipnc
