@@ -21,7 +21,7 @@ set_gravity: Vector3 = Vector3(0.0, 0.0, 0.0)
 set_global_damping_coefficient: Real = 0.0
 
 set_time_step: Real = 1e-3
-set_target_time: Real = 10.0
+set_target_time: Real = 100.0
 set_saving_interval_time: Real = 0.1
 
 # Parameters
