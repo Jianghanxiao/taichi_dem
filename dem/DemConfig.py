@@ -38,7 +38,7 @@ set_wall_elastic_modulus: Real = 2e11
 set_wall_poisson_ratio: Real = 0.25
 
 set_bond_radius_ratio: Real = 0.5
-set_bond_elastic_modulus: Real = 1e7
+set_bond_elastic_modulus: Real = 1e6
 set_bond_poission_ratio: Real = 0.25
 set_bond_compressive_strength: Real = 1e8
 set_bond_tensile_strength: Real = 1e8
