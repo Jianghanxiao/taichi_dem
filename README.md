@@ -14,7 +14,7 @@ A complete implementation of DEM in Taichi Lang from engineering perspective.
 
 ![](Demos/soft_bunny/soft_bunny.gif)
 
->Visualized using Houdini (TM). Houdini (TM) is an effect software with flexible workflows which are friendly to users. https://www.sidefx.com/products/houdini/
+>Visualized using Houdini (TM). Houdini (TM) is an effect software with flexible workflows which are friendly to users. https://www.sidefx.com/products/houdini
 
 ## Authors
 Denver Pilphis (Di Peng) - DEM theory and implementation

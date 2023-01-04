@@ -16,7 +16,7 @@
 
 ![](Demos/soft_bunny/soft_bunny.gif)
 
->使用Houdini (TM) 可视化。Houdini (TM) 是一款特效软件，工作流程灵活，对用户友好。https://www.sidefx.com/products/houdini/
+>使用Houdini (TM) 可视化。Houdini (TM) 是一款特效软件，工作流程灵活，对用户友好。https://www.sidefx.com/products/houdini
 
 ## 作者
 
