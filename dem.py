@@ -1456,9 +1456,9 @@ class DEMSolver:
                 #    # K[7, 5] is WRONG in original EBPM document
                 #    # ΔFay + ΔFby is nonzero
                 #    # which does not satisfy the equilibrium
-                #    # Acknowledgement to Dr. Xizhong Chen from
-                #    # Department of Chemical and Biological Engineering,
-                #    # The University of Sheffield
+                #    # Acknowledgement to Associate Prof. Xizhong Chen from
+                #    # School of Chemistry and Chemical Engineering,
+                #    # Shanghai Jiao Tong University
                 #    # Reference: Chen et al. (2022) A comparative assessment and unification of bond models in DEM simulations.
                 #    # https://doi.org/10.1007/s10035-021-01187-2
                 #    [   0, -k2,   0,   0,   0, -k3,   0,  k2,   0,   0,   0, -k3], 1
