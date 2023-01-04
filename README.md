@@ -1,4 +1,7 @@
 # Engineering quantitative DEM simulation using Taichi DEM
+
+Won the 1st prize and most popular prize in Taichi DEM code optimization competition! See: https://forum.taichi-lang.cn/t/topic/2975 (in Chinese)
+
 A complete implementation of DEM in Taichi Lang from engineering perspective.
 
 ![](Demos/carom/carom.gif)
@@ -88,5 +91,5 @@ This could be a good example of comparison to the demo above.
 ![](Demos/soft_bunny/soft_bunny.gif)
 
 ## Acknowledgements
-Dr. Xizhong Chen from Department of Chemical and Biological Engineering,
-The University of Sheffield is acknowledged.
+Associate Prof. Xizhong Chen from School of Chemistry and Chemical Engineering,
+Shanghai Jiao Tong University (https://scce.sjtu.edu.cn/teachers/3196.html, in Chinese) is acknowledged.

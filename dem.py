@@ -108,14 +108,14 @@
 # set_domain_max = Vector3(200.0, 200.0, 90.0)
 # set_init_particles = "Resources/bunny.p4p"
 # set_wall_normal = Vector3(0.0, 0.0, -1.0)
-# set_wall_distance = 1.0
+# set_wall_distance = 25.0
 # set_bond_elastic_modulus: Real = 5e8
 # set_bond_compressive_strength: Real = 5e8
 # set_bond_tensile_strength: Real = 9e7
 # set_bond_shear_strength: Real = 9e7
 # set_max_coordinate_number = 64
 # DEMSolverConfig.dt = 2.63e-5
-# DEMSolverConfig.target_time = 5.0
+# DEMSolverConfig.target_time = 10.0
 # DEMSolverConfig.saving_interval_time = 0.05
 # DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
 
