@@ -10,13 +10,13 @@
 
 ![](Demos/cube_18112_particles_impact/cube_18112_particles_impact.gif)
 
->使用BIMBase (TM) 二次开发可视化。BIMBase (TM) 是北京构力科技有限公司研发的用于BIM的图形平台。https://app.pkpm.cn/pbims
+>使用 BIMBase (TM) 二次开发可视化。BIMBase (TM) 是北京构力科技有限公司研发的用于 BIM 的图形平台。https://app.pkpm.cn/pbims
 
 ![](Demos/bunny/bunny.gif)
 
 ![](Demos/soft_bunny/soft_bunny.gif)
 
->使用Houdini (TM) 可视化。Houdini (TM) 是一款特效软件，工作流程灵活，对用户友好。https://www.sidefx.com/products/houdini
+>使用 Houdini (TM) 可视化。Houdini (TM) 是一款特效软件，工作流程灵活，对用户友好。https://www.sidefx.com/products/houdini
 
 ## 作者
 
