@@ -119,6 +119,21 @@
 # DEMSolverConfig.saving_interval_time = 0.05
 # DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
 
+# 6. Stanford bunny free fall (fast)
+# This demo is a fast version of Demo 4
+# for final testing in PKU HPC competition.
+# Parameters to set:
+# set_domain_min = Vector3(-200.0, -200.0, -30.0)
+# set_domain_max = Vector3(200.0, 200.0, 90.0)
+# set_init_particles = "Resources/bunny.p4p"
+# set_wall_normal = Vector3(0.0, 0.0, -1.0)
+# set_wall_distance = 0.5
+# set_max_coordinate_number = 64
+# DEMSolverConfig.dt = 2.63e-5
+# DEMSolverConfig.target_time = 0.5
+# DEMSolverConfig.saving_interval_time = 0.05
+# DEMSolverConfig.gravity = Vector3(0.0, 0.0, -9.81)
+
 
 from math import pi
 import taichi as ti

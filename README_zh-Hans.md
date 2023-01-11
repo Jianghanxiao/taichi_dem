@@ -16,6 +16,8 @@
 
 ![](Demos/soft_bunny/soft_bunny.gif)
 
+![](Demos/bunny_fast/bunny_fast.gif)
+
 >使用 Houdini (TM) 可视化。Houdini (TM) 是一款特效软件，工作流程灵活，对用户友好。https://www.sidefx.com/products/houdini
 
 ## 作者
@@ -79,6 +81,11 @@ MuGdxy (Xinyu Lu) - 性能优化
 本例展示了一个斯坦福兔子形状的胶结团块自由落体撞击水平表面的过程。由于胶结强度极高，兔子不会破碎；相反，由于胶结弹性模量相对较低，兔子会表现出相当软的力学响应。本例可作为上例很好的对比。
 
 ![](Demos/soft_bunny/soft_bunny.gif)
+
+### 斯坦福兔子自由落体撞击水平表面 (快速计算版)
+本例为斯坦福兔子自由落体撞击水平表面的快速计算版。用于北京大学高性能计算综合能力竞赛最终测试。
+
+![](Demos/bunny_fast/bunny_fast.gif)
 
 ## 致谢
 

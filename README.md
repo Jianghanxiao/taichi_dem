@@ -14,6 +14,8 @@ A complete implementation of DEM in Taichi Lang from engineering perspective.
 
 ![](Demos/soft_bunny/soft_bunny.gif)
 
+![](Demos/bunny_fast/bunny_fast.gif)
+
 >Visualized using Houdini (TM). Houdini (TM) is an effect software with flexible workflows which are friendly to users. https://www.sidefx.com/products/houdini
 
 ## Authors
@@ -89,6 +91,11 @@ as the elastic modulus of the bond is relatively low.
 This could be a good example of comparison to the demo above.
 
 ![](Demos/soft_bunny/soft_bunny.gif)
+
+### Stanford bunny free fall (fast)
+This demo is a fast version of Stanford bunny free fall for final testing in PKU HPC competition.
+
+![](Demos/bunny_fast/bunny_fast.gif)
 
 ## Acknowledgements
 Associate Prof. Xizhong Chen from School of Chemistry and Chemical Engineering,
