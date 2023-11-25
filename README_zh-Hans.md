@@ -64,7 +64,7 @@ MuGdxy (Xinyu Lu) - 性能优化
 
 ### 18112 个颗粒胶结组成的立方体团块撞击平整表面
 
-本例与上例相似，唯独团块所含颗粒数不同。本例可用于大规模体系仿真的性能测试。
+本例与上例相似，唯独团块所含颗粒数不同。本例出自 Peng et al. (2023) Oblique impact breakage unification of nonspherical particles using discrete element method. (https://doi.org/10.1016/j.partic.2023.11.012)
 
 ![](Demos/cube_18112_particles_impact/cube_18112_particles_impact.gif)
 

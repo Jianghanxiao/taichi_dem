@@ -66,7 +66,8 @@
 #
 # 3. Cube with 18112 particles impact on a flat surface
 # This demo is similar to the one above, with the only difference of particle number.
-# This could be a good example of benchmark on large system simulation.
+# This demo comes from Peng et al. (2023) Oblique impact breakage unification of nonspherical particles using discrete element method.
+# https://doi.org/10.1016/j.partic.2023.11.012
 # Parameters to set:
 # set_domain_min = Vector3(-10, -10, -10)
 # set_domain_max = Vector3(0.11, 10, 10)

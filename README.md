@@ -69,7 +69,7 @@ This could be a good example of validating EBPM.
 
 ### Cubic bonded agglomerate with 18112 particles impact on a flat surface
 This demo is similar to the one above, with the only difference of particle number.
-This could be a good example of benchmark on large system simulation.
+This demo comes from Peng et al. (2023) Oblique impact breakage unification of nonspherical particles using discrete element method. (https://doi.org/10.1016/j.partic.2023.11.012)
 
 ![](Demos/cube_18112_particles_impact/cube_18112_particles_impact.gif)
 
