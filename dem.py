@@ -122,6 +122,11 @@
 import taichi as ti
 import taichi.math as tm
 
+def remove_suffix(input_string, suffix):
+    if suffix and input_string.endswith(suffix):
+        return input_string[:-len(suffix)]
+    return input_string
+
 # Init taichi context
 # Device memory size is recommended to be 75% of your GPU VRAM
 ti.init(arch=ti.gpu, device_memory_GB=6, debug=False)
@@ -968,7 +973,7 @@ class DEMSolver:
     def init_particle_fields(self, file_name:str, domain_min:Vector3, domain_max:Vector3):
         fp = open(file_name, encoding="UTF-8")
         line : str = fp.readline() # "TIMESTEP  PARTICLES" line
-        line = fp.readline().removesuffix('\n') # "0 18112" line
+        line = remove_suffix(fp.readline(), '\n') # "0 18112" line
         n = int(line.split(' ')[1])
         n = min(n, MaxParticleCount)
         self.check_workload(n)
